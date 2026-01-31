@@ -1,33 +1,37 @@
 from flask import Flask, jsonify, request
 from datetime import datetime
-from models import db_connection, setup_database
+from models import db_connection, setup_database, Model
 from dotenv import load_dotenv
 import os
-from citizen import citizen_app
-from admin import admin_app
-from cleaner import cleaner_app
+import bcrypt
+import jwt
+from auth import token_required, role_required
 
 load_dotenv()
 
 app = Flask(__name__)
 app.config['JSON_SORT_KEYS'] = False
-
-
-# Modular Blueprints can be registered here if needed
-app.register_blueprint(citizen_app, url_prefix='/citizen')
-app.register_blueprint(admin_app, url_prefix='/admin')
-app.register_blueprint(cleaner_app, url_prefix='/cleaner')
-
+app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'your-secret-key-change-in-production')
 
 # Initialize database connection pool and setup database
 db_connection.create_pool()
-if os.getenv('RERUN_MIGRATIONS', 'true').lower() == 'true':
-    setup_database()
+
+
+# Create model instances
 users_model = Model(db_connection, 'users')
+citizen_profiles_model = Model(db_connection, 'citizen_profiles')
+cleaner_profiles_model = Model(db_connection, 'cleaner_profiles')
+admin_profiles_model = Model(db_connection, 'admin_profiles')
 
+# Import blueprints after models are created
+from citizen import citizen_bp
+from admin import admin_bp
+from cleaner import cleaner_bp
 
-
-
+# Register blueprints
+app.register_blueprint(citizen_bp, url_prefix='/api/citizen')
+app.register_blueprint(admin_bp, url_prefix='/api/admin')
+app.register_blueprint(cleaner_bp, url_prefix='/api/cleaner')
 
 
 # Basic Routes
@@ -35,16 +39,31 @@ users_model = Model(db_connection, 'users')
 def home():
     """API documentation endpoint."""
     return jsonify({
-        "message": "Flask REST API with Custom Database Helper",
+        "message": "Zero Waste Management System API",
         "version": "1.0.0",
-        "database": "PostgreSQL with custom helper library",
+        "database": "PostgreSQL with 3NF normalization",
         "endpoints": {
-            "GET /api/users": "Get all users",
-            "GET /api/users/<id>": "Get user by ID",
-            "POST /api/users": "Create new user",
-            "PUT /api/users/<id>": "Update user by ID",
-            "DELETE /api/users/<id>": "Delete user by ID",
-            "GET /api/health": "Check API health"
+            "auth": {
+                "POST /api/auth/register": "Register new user",
+                "POST /api/auth/login": "Login user",
+                "GET /api/auth/me": "Get current user profile"
+            },
+            "citizen": {
+                "GET /api/citizen/profile": "Get citizen profile",
+                "PUT /api/citizen/profile": "Update citizen profile"
+            },
+            "cleaner": {
+                "GET /api/cleaner/profile": "Get cleaner profile",
+                "PUT /api/cleaner/profile": "Update cleaner profile"
+            },
+            "admin": {
+                "GET /api/admin/profile": "Get admin profile",
+                "PUT /api/admin/profile": "Update admin profile",
+                "GET /api/admin/users": "Get all users (admin only)"
+            },
+            "health": {
+                "GET /api/health": "Check API health"
+            }
         }
     })
 
@@ -53,7 +72,6 @@ def home():
 def health():
     """Check if API and database are running."""
     try:
-        # Test database connection
         users_model.execute_raw("SELECT 1")
         db_status = "connected"
     except:
@@ -67,91 +85,34 @@ def health():
 
 
 
-@app.route('/api/users', methods=['GET'])
-def get_users():
+# Authentication Routes
+@app.route('/api/auth/register', methods=['POST'])
+def register():
     """
-    Get all users with optional filtering.
-    Query Parameters:
-        - name: Filter by name (partial match)
-        - limit: Limit number of results
-        - order_by: Sort by column (e.g., 'name', 'created_at DESC')
-    """
-    try:
-        name_filter = request.args.get('name')
-        limit = request.args.get('limit', type=int)
-        order_by = request.args.get('order_by', 'id')
-        
-        # If name filter is provided, use raw SQL for LIKE search
-        if name_filter:
-            query = "SELECT * FROM users WHERE name ILIKE %s ORDER BY " + order_by
-            params = [f"%{name_filter}%"]
-            if limit:
-                query += f" LIMIT {limit}"
-            users = users_model.execute_raw(query, params)
-        else:
-            users = users_model.find_all(order_by=order_by, limit=limit)
-        
-        return jsonify({
-            "success": True,
-            "count": len(users),
-            "data": users
-        }), 200
-    except Exception as e:
-        return jsonify({
-            "success": False,
-            "error": str(e)
-        }), 500
-
-
-
-@app.route('/api/users/<int:user_id>', methods=['GET'])
-def get_user(user_id):
-    """Get a specific user by ID."""
-    try:
-        user = users_model.find_by_id(user_id)
-        
-        if user:
-            return jsonify({
-                "success": True,
-                "data": user
-            }), 200
-        else:
-            return jsonify({
-                "success": False,
-                "error": "User not found"
-            }), 404
-    except Exception as e:
-        return jsonify({
-            "success": False,
-            "error": str(e)
-        }), 500
-
-
-
-@app.route('/api/users', methods=['POST'])
-def create_user():
-    """
-    Create a new user.
+    Register a new user
     Required JSON body:
-        - name: User's name
         - email: User's email
+        - password: User's password
+        - name: User's name
+        - role: User role (CITIZEN, CLEANER, ADMIN)
+        - phone: User's phone (optional)
     """
     try:
-        # Check if request contains JSON
         if not request.is_json:
-            return jsonify({
-                "success": False,
-                "error": "Content-Type must be application/json"
-            }), 400
+            return jsonify({'success': False, 'error': 'Content-Type must be application/json'}), 400
         
         data = request.get_json()
         
         # Validate required fields
-        if not data.get('name') or not data.get('email'):
-            return jsonify({
-                "success": False,
-                "error": "Name and email are required"
-            }), 400
+        required_fields = ['email', 'password', 'name', 'role']
+        for field in required_fields:
+            if not data.get(field):
+                return jsonify({'success': False, 'error': f'{field} is required'}), 400
+        
+        # Validate role
+        valid_roles = ['CITIZEN', 'CLEANER', 'ADMIN']
+        if data['role'] not in valid_roles:
+            return jsonify({'success': False, 'error': f'Role must be one of: {", ".join(valid_roles)}'}), 400
         
         # Check if email already exists
         existing = users_model.execute_raw(
@@ -160,122 +121,139 @@ def create_user():
         )
         
         if existing:
-            return jsonify({
-                "success": False,
-                "error": "Email already exists"
-            }), 409
+            return jsonify({'success': False, 'error': 'Email already exists'}), 409
         
-        # Create new user
-        new_user = users_model.create({
+        # Hash password
+        password_hash = bcrypt.hashpw(data['password'].encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+        
+        # Create user
+        user_data = {
+            'email': data['email'],
+            'password_hash': password_hash,
             'name': data['name'],
-            'email': data['email']
-        })
+            'role': data['role'],
+            'phone': data.get('phone'),
+            'is_active': True
+        }
+        
+        new_user = users_model.create(user_data)
+        
+        # Remove password hash from response
+        new_user.pop('password_hash', None)
         
         return jsonify({
-            "success": True,
-            "message": "User created successfully",
-            "data": new_user
+            'success': True,
+            'message': 'User registered successfully',
+            'data': new_user
         }), 201
     
     except Exception as e:
-        return jsonify({
-            "success": False,
-            "error": str(e)
-        }), 500
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 
-@app.route('/api/users/<int:user_id>', methods=['PUT'])
-def update_user(user_id):
+@app.route('/api/auth/login', methods=['POST'])
+def login():
     """
-    Update an existing user.
-    JSON body can contain:
-        - name: New name
-        - email: New email
+    Login user
+    Required JSON body:
+        - email: User's email
+        - password: User's password
     """
     try:
-        # Check if user exists
-        user = users_model.find_by_id(user_id)
-        if not user:
-            return jsonify({
-                "success": False,
-                "error": "User not found"
-            }), 404
-        
         if not request.is_json:
-            return jsonify({
-                "success": False,
-                "error": "Content-Type must be application/json"
-            }), 400
+            return jsonify({'success': False, 'error': 'Content-Type must be application/json'}), 400
         
         data = request.get_json()
-        update_data = {}
         
-        # Prepare update data
-        if 'name' in data:
-            update_data['name'] = data['name']
+        # Validate required fields
+        if not data.get('email') or not data.get('password'):
+            return jsonify({'success': False, 'error': 'Email and password are required'}), 400
         
-        if 'email' in data:
-            # Check if email is taken by another user
-            existing = users_model.execute_raw(
-                "SELECT id FROM users WHERE email = %s AND id != %s",
-                [data['email'], user_id]
-            )
-            if existing:
-                return jsonify({
-                    "success": False,
-                    "error": "Email already exists"
-                }), 409
-            update_data['email'] = data['email']
+        # Find user by email
+        users = users_model.execute_raw(
+            "SELECT * FROM users WHERE email = %s",
+            [data['email']]
+        )
         
-        if not update_data:
-            return jsonify({
-                "success": False,
-                "error": "No fields to update"
-            }), 400
+        if not users:
+            return jsonify({'success': False, 'error': 'Invalid email or password'}), 401
         
-        # Update user
-        updated_user = users_model.update(update_data, {'id': user_id})
+        user = users[0]
+        
+        # Check if user is active
+        if not user.get('is_active'):
+            return jsonify({'success': False, 'error': 'Account is deactivated'}), 401
+        
+        # Verify password
+        if not bcrypt.checkpw(data['password'].encode('utf-8'), user['password_hash'].encode('utf-8')):
+            return jsonify({'success': False, 'error': 'Invalid email or password'}), 401
+        
+        # Update last login
+        users_model.execute_raw(
+            "UPDATE users SET last_login_at = CURRENT_TIMESTAMP WHERE id = %s",
+            [user['id']]
+        )
+        
+        # Generate JWT token
+        token = jwt.encode({
+            'user_id': user['id'],
+            'email': user['email'],
+            'role': user['role']
+        }, app.config['SECRET_KEY'], algorithm="HS256")
+        
+        # Remove password hash from response
+        user.pop('password_hash', None)
         
         return jsonify({
-            "success": True,
-            "message": "User updated successfully",
-            "data": updated_user
+            'success': True,
+            'message': 'Login successful',
+            'token': token,
+            'user': user
         }), 200
     
     except Exception as e:
-        return jsonify({
-            "success": False,
-            "error": str(e)
-        }), 500
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 
-@app.route('/api/users/<int:user_id>', methods=['DELETE'])
-def delete_user(user_id):
-    """Delete a user by ID."""
+@app.route('/api/auth/me', methods=['GET'])
+@token_required
+def get_current_user():
+    """Get current authenticated user profile"""
     try:
-        # Check if user exists
-        user = users_model.find_by_id(user_id)
-        if not user:
-            return jsonify({
-                "success": False,
-                "error": "User not found"
-            }), 404
+        user = request.current_user.copy()
+        user.pop('password_hash', None)
         
-        # Delete user
-        deleted_count = users_model.delete({'id': user_id})
+        # Get role-specific profile
+        profile = None
+        if user['role'] == 'CITIZEN':
+            profiles = citizen_profiles_model.execute_raw(
+                "SELECT * FROM citizen_profiles WHERE user_id = %s",
+                [user['id']]
+            )
+            profile = profiles[0] if profiles else None
+        elif user['role'] == 'CLEANER':
+            profiles = cleaner_profiles_model.execute_raw(
+                "SELECT * FROM cleaner_profiles WHERE user_id = %s",
+                [user['id']]
+            )
+            profile = profiles[0] if profiles else None
+        elif user['role'] == 'ADMIN':
+            profiles = admin_profiles_model.execute_raw(
+                "SELECT * FROM admin_profiles WHERE user_id = %s",
+                [user['id']]
+            )
+            profile = profiles[0] if profiles else None
         
         return jsonify({
-            "success": True,
-            "message": f"User {user_id} deleted successfully",
-            "deleted_count": deleted_count
+            'success': True,
+            'data': {
+                'user': user,
+                'profile': profile
+            }
         }), 200
     
     except Exception as e:
-        return jsonify({
-            "success": False,
-            "error": str(e)
-        }), 500
-
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 
 @app.errorhandler(404)
@@ -296,33 +274,33 @@ def internal_error(error):
     }), 500
 
 
-
 @app.teardown_appcontext
 def cleanup(error):
     """Cleanup resources."""
     pass
 
 
-
 if __name__ == '__main__':
     print("\n" + "="*70)
-    print("Flask REST API with Custom Database Helper")
+    print("Zero Waste Management System API")
     print("="*70)
-    print("\nSetting up database...")
-    setup_database()
+    if os.getenv('RERUN_MIGRATIONS', 'true').lower() == 'true':
+        print("\nSetting up database...")
+        setup_database()
+    else:
+        print("\nDatabase already setup...")
     print("\nAvailable endpoints:")
-    print("  GET    http://127.0.0.1:5000/")
+    print("  POST   http://127.0.0.1:5000/api/auth/register")
+    print("  POST   http://127.0.0.1:5000/api/auth/login")
+    print("  GET    http://127.0.0.1:5000/api/auth/me")
+    print("  GET    http://127.0.0.1:5000/api/citizen/profile")
+    print("  GET    http://127.0.0.1:5000/api/cleaner/profile")
+    print("  GET    http://127.0.0.1:5000/api/admin/profile")
     print("  GET    http://127.0.0.1:5000/api/health")
-    print("  GET    http://127.0.0.1:5000/api/users")
-    print("  GET    http://127.0.0.1:5000/api/users/<id>")
-    print("  POST   http://127.0.0.1:5000/api/users")
-    print("  PUT    http://127.0.0.1:5000/api/users/<id>")
-    print("  DELETE http://127.0.0.1:5000/api/users/<id>")
     print("\nTip: Use Postman, curl, or Thunder Client to test the API")
     print("="*70 + "\n")
     
     try:
         app.run(debug=True, port=5000)
     finally:
-        # Close database connection pool when application shuts down
         db_connection.close_pool()

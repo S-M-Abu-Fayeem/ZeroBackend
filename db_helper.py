@@ -1,6 +1,16 @@
-import psycopg2
-from psycopg2 import pool
-from psycopg2.extras import RealDictCursor
+try:
+    # Try psycopg3 first (for Python 3.12+)
+    import psycopg
+    from psycopg.rows import dict_row
+    from psycopg_pool import ConnectionPool
+    PSYCOPG_VERSION = 3
+except ImportError:
+    # Fall back to psycopg2 (for Python < 3.12)
+    import psycopg2
+    from psycopg2 import pool
+    from psycopg2.extras import RealDictCursor
+    PSYCOPG_VERSION = 2
+
 from contextlib import contextmanager
 from typing import List, Dict, Any, Optional, Tuple
 
@@ -32,18 +42,28 @@ class DatabaseConnection:
         self.max_conn = max_conn
 
     def create_pool(self):
-        """Create a SimpleConnectionPool with configured bounds; returns True on success."""
+        """Create a connection pool with configured bounds; returns True on success."""
         try:
-            self.connection_pool = psycopg2.pool.SimpleConnectionPool(
-                self.min_conn,
-                self.max_conn,
-                host=self.config.host,
-                port=self.config.port,
-                database=self.config.database,
-                user=self.config.user,
-                password=self.config.password
-            )
-            print("Connection pool created successfully")
+            if PSYCOPG_VERSION == 3:
+                # psycopg3 connection string
+                conninfo = f"host={self.config.host} port={self.config.port} dbname={self.config.database} user={self.config.user} password={self.config.password}"
+                self.connection_pool = ConnectionPool(
+                    conninfo=conninfo,
+                    min_size=self.min_conn,
+                    max_size=self.max_conn
+                )
+            else:
+                # psycopg2 connection pool
+                self.connection_pool = psycopg2.pool.SimpleConnectionPool(
+                    self.min_conn,
+                    self.max_conn,
+                    host=self.config.host,
+                    port=self.config.port,
+                    database=self.config.database,
+                    user=self.config.user,
+                    password=self.config.password
+                )
+            print(f"Connection pool created successfully (psycopg{PSYCOPG_VERSION})")
             return True
         except Exception as e:
             print(f"Error creating connection pool: {e}")
@@ -51,26 +71,42 @@ class DatabaseConnection:
 
     @contextmanager
     def get_cursor(self, commit=False):
-        """Yield a RealDictCursor from the pool; commit or rollback based on execution outcome."""
-        connection = self.connection_pool.getconn()
-        cursor = connection.cursor(cursor_factory=RealDictCursor)
-
-        try:
-            yield cursor
-            if commit:
-                connection.commit()
-        except Exception as e:
-            connection.rollback()
-            print(f"Error during database operation: {e}")
-            raise e
-        finally:
-            cursor.close()
-            self.connection_pool.putconn(connection)
+        """Yield a cursor from the pool; commit or rollback based on execution outcome."""
+        if PSYCOPG_VERSION == 3:
+            # psycopg3 uses connection context manager
+            with self.connection_pool.connection() as connection:
+                with connection.cursor(row_factory=dict_row) as cursor:
+                    try:
+                        yield cursor
+                        if commit:
+                            connection.commit()
+                    except Exception as e:
+                        connection.rollback()
+                        print(f"Error during database operation: {e}")
+                        raise e
+        else:
+            # psycopg2 manual connection management
+            connection = self.connection_pool.getconn()
+            cursor = connection.cursor(cursor_factory=RealDictCursor)
+            try:
+                yield cursor
+                if commit:
+                    connection.commit()
+            except Exception as e:
+                connection.rollback()
+                print(f"Error during database operation: {e}")
+                raise e
+            finally:
+                cursor.close()
+                self.connection_pool.putconn(connection)
     
     def close_pool(self):
         """Close all connections in the pool if it has been initialized."""
         if self.connection_pool:
-            self.connection_pool.closeall()
+            if PSYCOPG_VERSION == 3:
+                self.connection_pool.close()
+            else:
+                self.connection_pool.closeall()
             print("Connection pool closed")
 
 class QueryBuilder:
