@@ -135,7 +135,10 @@ celerybeat.pid
 *.sage.py
 
 # Environments
+# IMPORTANT: Never commit .env files with sensitive credentials
 .env
+.env.local
+.env.*.local
 .envrc
 .venv
 env/
