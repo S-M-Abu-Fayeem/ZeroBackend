@@ -1,8 +1,10 @@
 from flask import Flask, jsonify, request
+from flask_cors import CORS
 from datetime import datetime
-from models import db_connection, setup_database, Model
+from models import db_connection, setup_database, apply_runtime_schema_patches, Model
 from dotenv import load_dotenv
 import os
+import importlib
 import bcrypt
 import jwt
 from auth import token_required, role_required
@@ -13,9 +15,16 @@ app = Flask(__name__)
 app.config['JSON_SORT_KEYS'] = False
 app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'your-secret-key-change-in-production')
 
+# Configure CORS
+CORS(app, 
+     resources={r"/api/*": {"origins": ["http://localhost:3000", "http://127.0.0.1:3000"]}},
+     methods=['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+     allow_headers=['Content-Type', 'Authorization'],
+     supports_credentials=True)
+
 # Initialize database connection pool and setup database
 db_connection.create_pool()
-
+apply_runtime_schema_patches()
 
 # Create model instances
 users_model = Model(db_connection, 'users')
@@ -23,15 +32,69 @@ citizen_profiles_model = Model(db_connection, 'citizen_profiles')
 cleaner_profiles_model = Model(db_connection, 'cleaner_profiles')
 admin_profiles_model = Model(db_connection, 'admin_profiles')
 
-# Import blueprints after models are created
-from citizen import citizen_bp
-from admin import admin_bp
-from cleaner import cleaner_bp
+# Route modules attach endpoints onto blueprint objects via decorators.
+ROUTE_MODULES = [
+        # Citizen route modules
+        'citizen_profile_routes',
+        'citizen_report_routes',
+        'citizen_engagement_routes',
+        'citizen_notification_routes',
+        'citizen_account_routes',
 
-# Register blueprints
-app.register_blueprint(citizen_bp, url_prefix='/api/citizen')
-app.register_blueprint(admin_bp, url_prefix='/api/admin')
-app.register_blueprint(cleaner_bp, url_prefix='/api/cleaner')
+        # Cleaner route modules
+        'cleaner_profile_routes',
+        'cleaner_task_routes',
+        'cleaner_payment_routes',
+        'cleaner_community_routes',
+        
+        # Admin route modules
+        'admin_profile_routes',
+        'admin_management_routes',
+        'admin_report_routes',
+]
+
+
+def load_required_route_modules():
+    """Import route modules so decorators attach endpoints to blueprint objects."""
+    for module_name in ROUTE_MODULES:
+        try:
+            importlib.import_module(module_name)
+        except Exception as exc:
+            raise RuntimeError(f"Failed to load route module '{module_name}': {exc}") from exc
+
+
+load_required_route_modules()
+
+# Every registered blueprint now follows one module+symbol+prefix pattern.
+BLUEPRINT_SPECS = [
+    ('citizen_blueprint', 'citizen_bp', '/api/citizen'),
+    ('admin_blueprint', 'admin_bp', '/api/admin'),
+    ('cleaner_blueprint', 'cleaner_bp', '/api/cleaner'),
+    ('admin_tasks', 'admin_tasks_bp', '/api/admin'),
+    ('admin_zones', 'admin_zones_bp', '/api/admin'),
+    ('admin_payments', 'admin_payments_bp', '/api/admin'),
+    ('shared_endpoints', 'shared_bp', '/api'),
+    ('notifications', 'notifications_bp', '/api'),
+    ('leaderboards', 'leaderboards_bp', '/api'),
+    ('ai_analysis', 'ai_bp', '/api'),
+]
+
+
+def load_and_register_blueprints(flask_app: Flask):
+    """Import blueprint symbols from modules and register them with prefixes."""
+    for module_name, blueprint_attr, prefix in BLUEPRINT_SPECS:
+        try:
+            module = importlib.import_module(module_name)
+            blueprint = getattr(module, blueprint_attr)
+        except Exception as exc:
+            raise RuntimeError(
+                f"Failed to load blueprint '{blueprint_attr}' from '{module_name}': {exc}"
+            ) from exc
+
+        flask_app.register_blueprint(blueprint, url_prefix=prefix)
+
+
+load_and_register_blueprints(app)
 
 
 # Basic Routes
@@ -42,24 +105,84 @@ def home():
         "message": "Zero Waste Management System API",
         "version": "1.0.0",
         "database": "PostgreSQL with 3NF normalization",
+        "total_endpoints": 63,
         "endpoints": {
             "auth": {
                 "POST /api/auth/register": "Register new user",
                 "POST /api/auth/login": "Login user",
-                "GET /api/auth/me": "Get current user profile"
+                "GET /api/auth/me": "Get current user profile",
+                "POST /api/auth/logout": "Logout user"
             },
             "citizen": {
                 "GET /api/citizen/profile": "Get citizen profile",
-                "PUT /api/citizen/profile": "Update citizen profile"
+                "PUT /api/citizen/profile": "Update citizen profile",
+                "GET /api/citizen/stats": "Get citizen statistics",
+                "POST /api/citizen/reports": "Submit waste report",
+                "GET /api/citizen/reports": "Get my reports",
+                "GET /api/citizen/reports/<id>": "Get report details",
+                "POST /api/citizen/reports/<id>/review": "Submit cleanup review",
+                "GET /api/citizen/badges": "Get my badges",
+                "GET /api/citizen/points": "Get points history",
+                "GET /api/citizen/leaderboard": "Get citizen leaderboard",
+                "GET /api/citizen/notifications": "Get notifications"
             },
             "cleaner": {
                 "GET /api/cleaner/profile": "Get cleaner profile",
-                "PUT /api/cleaner/profile": "Update cleaner profile"
+                "PUT /api/cleaner/profile": "Update cleaner profile",
+                "GET /api/cleaner/stats": "Get cleaner statistics",
+                "GET /api/cleaner/tasks/available": "Get available tasks",
+                "POST /api/cleaner/tasks/<id>/take": "Take task",
+                "GET /api/cleaner/tasks": "Get my tasks",
+                "POST /api/cleaner/tasks/<id>/complete": "Complete task",
+                "GET /api/cleaner/tasks/<id>": "Get task details",
+                "GET /api/cleaner/earnings": "Get earnings history",
+                "GET /api/cleaner/reviews": "Get reviews",
+                "GET /api/cleaner/leaderboard": "Get cleaner leaderboard"
             },
             "admin": {
                 "GET /api/admin/profile": "Get admin profile",
                 "PUT /api/admin/profile": "Update admin profile",
-                "GET /api/admin/users": "Get all users (admin only)"
+                "GET /api/admin/users": "Get all users",
+                "GET /api/admin/users/<id>": "Get user details",
+                "GET /api/admin/stats": "Get system stats",
+                "GET /api/admin/reports/pending": "Get pending reports",
+                "POST /api/admin/reports/<id>/approve": "Approve report",
+                "POST /api/admin/reports/<id>/decline": "Decline report",
+                "GET /api/admin/reports": "Get all reports",
+                "GET /api/admin/tasks": "Get all tasks",
+                "POST /api/admin/tasks": "Create manual task",
+                "PUT /api/admin/tasks/<id>": "Update task",
+                "DELETE /api/admin/tasks/<id>": "Delete task",
+                "GET /api/admin/zones": "Get zones",
+                "POST /api/admin/zones": "Create zone",
+                "PUT /api/admin/zones/<id>": "Update zone",
+                "GET /api/admin/zones/<id>": "Get zone details",
+                "DELETE /api/admin/zones/<id>": "Delete zone",
+                "GET /api/admin/payments/pending": "Get pending payments",
+                "POST /api/admin/payments/process": "Process payments"
+            },
+            "ai": {
+                "POST /api/ai/analyze-waste": "Analyze waste image",
+                "POST /api/ai/compare-cleanup": "Compare before/after images",
+                "POST /api/ai/analyze-report/<id>": "Analyze existing report"
+            },
+            "notifications": {
+                "GET /api/notifications": "Get notifications (all roles)",
+                "PUT /api/notifications/<id>/read": "Mark notification read",
+                "PUT /api/notifications/read-all": "Mark all notifications read",
+                "POST /api/admin/notifications/bulk": "Send bulk notification (admin)"
+            },
+            "leaderboards": {
+                "GET /api/leaderboards/citizens": "Get citizen leaderboard",
+                "GET /api/leaderboards/cleaners": "Get cleaner leaderboard",
+                "POST /api/admin/leaderboards/recalculate": "Recalculate leaderboards (admin)"
+            },
+            "shared": {
+                "GET /api/zones": "Get all zones",
+                "GET /api/zones/by-location": "Find zone by coordinates",
+                "GET /api/zones/<id>/stats": "Get zone statistics",
+                "GET /api/reports/<id>": "Get report details (any role)",
+                "GET /api/tasks/<id>": "Get task details (any role)"
             },
             "health": {
                 "GET /api/health": "Check API health"
@@ -72,7 +195,8 @@ def home():
 def health():
     """Check if API and database are running."""
     try:
-        users_model.execute_raw("SELECT 1")
+        with db_connection.get_cursor() as cursor:
+            cursor.execute("SELECT 1")
         db_status = "connected"
     except:
         db_status = "disconnected"

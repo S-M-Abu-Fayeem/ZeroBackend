@@ -13,7 +13,10 @@ def token_required(f):
     """Decorator to protect routes with JWT authentication"""
     @wraps(f)
     def decorated(*args, **kwargs):
-        from models import users_model  # Import here to avoid circular import
+        # Import here to avoid circular import
+        from models import db_connection
+        from db_helper import Model
+        users_model = Model(db_connection, 'users')
         
         token = None
         

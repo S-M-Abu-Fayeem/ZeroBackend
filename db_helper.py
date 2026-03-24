@@ -185,7 +185,7 @@ class Model:
     def find_all(self, where=None, order_by=None,limit=None):
         """Fetch multiple rows with optional filters, ordering, and limit."""
         query, params = self.query_builder.select(
-            self.table, where=where, order_by=order_by, limit=limit
+            self.table_name, where=where, order_by=order_by, limit=limit
         )
 
         with self.db.get_cursor() as cursor:
@@ -203,28 +203,28 @@ class Model:
     
     def create(self, data):
         """Insert a new record and return the inserted row."""
-        query, params = self.query_builder.insert(self.table, data)
+        query, params = self.query_builder.insert(self.table_name, data)
         with self.db.get_cursor(commit=True) as cursor:
             cursor.execute(query, params)
             return cursor.fetchone()
 
     def update(self, data, where):
         """Update matching records and return the updated row."""
-        query, params = self.query_builder.update(self.table, data, where)
+        query, params = self.query_builder.update(self.table_name, data, where)
         with self.db.get_cursor(commit=True) as cursor:
             cursor.execute(query, params)
             return cursor.fetchone()
 
     def delete(self, where):
         """Delete matching records and return the deleted row."""
-        query, params = self.query_builder.delete(self.table, where)
+        query, params = self.query_builder.delete(self.table_name, where)
         with self.db.get_cursor(commit=True) as cursor:
             cursor.execute(query, params)
             return cursor.fetchone()
 
     def execute_raw(self, query, params=None, commit=False):
         """Execute arbitrary SQL with optional parameters; returns fetched rows when available."""
-        with self.deb.get_cursor(commit=True) as cursor:
+        with self.db.get_cursor(commit=True) as cursor:
             cursor.execute(query, params or [])
             try:
                 return cursor.fetchall()

@@ -1,0 +1,224 @@
+from flask import Blueprint, jsonify, request
+from auth import token_required, role_required
+from models import db_connection
+
+notifications_bp = Blueprint('notifications_api', __name__)
+
+
+@notifications_bp.route('/notifications', methods=['GET'])
+@token_required
+def get_notifications():
+    """Get user notifications filtered by their preferences"""
+    try:
+        user_id = request.current_user['id']
+        
+        # Get query parameters
+        is_read = request.args.get('is_read')
+        notification_type = request.args.get('type')
+        limit = request.args.get('limit', type=int, default=20)
+        offset = request.args.get('offset', type=int, default=0)
+        
+        # Get user's notification preferences
+        with db_connection.get_cursor() as cursor:
+            cursor.execute("""
+                SELECT notify_report_updates, notify_news_updates
+                FROM users
+                WHERE id = %s
+            """, (user_id,))
+            prefs = cursor.fetchone()
+        
+        if not prefs:
+            return jsonify({'success': False, 'error': 'User not found'}), 404
+        
+        # Build type filter based on preferences
+        type_filter = []
+        type_params = []
+        
+        # Report & Activity Updates: report status, task assignments, point updates
+        if prefs.get('notify_report_updates', True):
+            type_filter.append("n.type IN ('REPORT', 'TASK', 'POINTS', 'BADGE')")
+        
+        # News & Updates: platform announcements and eco tips
+        if prefs.get('notify_news_updates', False):
+            type_filter.append("n.type IN ('ANNOUNCEMENT')")
+        
+        # If neither preference is enabled, return empty list
+        if not type_filter:
+            return jsonify({
+                'success': True,
+                'unread_count': 0,
+                'total': 0,
+                'data': []
+            }), 200
+        
+        type_clause = "AND (" + " OR ".join(type_filter) + ")"
+        
+        # Build base query
+        where_clause = f"WHERE n.user_id = %s {type_clause}"
+        params = [user_id]
+        
+        if is_read is not None:
+            where_clause += " AND n.is_read = %s"
+            params.append(is_read.lower() == 'true')
+        
+        if notification_type:
+            where_clause += " AND n.type = %s"
+            params.append(notification_type)
+        
+        with db_connection.get_cursor() as cursor:
+            # Get notifications
+            cursor.execute(f"""
+                SELECT 
+                    n.id, n.type, n.title, n.message, n.is_read, 
+                    n.related_report_id, n.related_task_id, n.created_at
+                FROM notifications n
+                {where_clause}
+                ORDER BY n.created_at DESC
+                LIMIT %s OFFSET %s
+            """, params + [limit, offset])
+            notifications = cursor.fetchall()
+            
+            # Get unread count and total
+            cursor.execute(f"""
+                SELECT 
+                    COUNT(*) as total,
+                    COUNT(CASE WHEN is_read = false THEN 1 END) as unread_count
+                FROM notifications n
+                WHERE n.user_id = %s {type_clause}
+            """, [user_id])
+            counts = cursor.fetchone()
+        
+        # Convert timestamps to ISO format
+        for notification in notifications:
+            notification['created_at'] = notification['created_at'].isoformat()
+        
+        return jsonify({
+            'success': True,
+            'unread_count': counts['unread_count'],
+            'total': counts['total'],
+            'data': notifications
+        }), 200
+    
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@notifications_bp.route('/notifications/<notification_id>/read', methods=['PUT'])
+@token_required
+def mark_notification_read(notification_id):
+    """Mark a specific notification as read"""
+    try:
+        user_id = request.current_user['id']
+        
+        with db_connection.get_cursor(commit=True) as cursor:
+            cursor.execute("""
+                UPDATE notifications 
+                SET is_read = true
+                WHERE id = %s AND user_id = %s AND is_read = false
+            """, (notification_id, user_id))
+            
+            if cursor.rowcount == 0:
+                return jsonify({'success': False, 'error': 'Notification not found or already read'}), 404
+        
+        return jsonify({
+            'success': True,
+            'message': 'Notification marked as read'
+        }), 200
+    
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@notifications_bp.route('/notifications/read-all', methods=['PUT'])
+@token_required
+def mark_all_notifications_read():
+    """Mark all user notifications as read"""
+    try:
+        user_id = request.current_user['id']
+        
+        with db_connection.get_cursor(commit=True) as cursor:
+            cursor.execute("""
+                UPDATE notifications 
+                SET is_read = true
+                WHERE user_id = %s AND is_read = false
+            """, (user_id,))
+            count = cursor.rowcount
+        
+        return jsonify({
+            'success': True,
+            'message': 'All notifications marked as read',
+            'count': count
+        }), 200
+    
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@notifications_bp.route('/admin/notifications/bulk', methods=['POST'])
+@token_required
+@role_required('ADMIN')
+def send_bulk_notification():
+    """Send notification to multiple users"""
+    try:
+        if not request.is_json:
+            return jsonify({'success': False, 'error': 'Content-Type must be application/json'}), 400
+        
+        data = request.get_json()
+        admin_id = request.current_user['id']
+        
+        # Validate required fields
+        required_fields = ['audience', 'type', 'title', 'message']
+        for field in required_fields:
+            if not data.get(field):
+                return jsonify({'success': False, 'error': f'{field} is required'}), 400
+        
+        # Validate audience
+        valid_audiences = ['all', 'citizens', 'cleaners']
+        if data['audience'] not in valid_audiences:
+            return jsonify({'success': False, 'error': f'Audience must be one of: {", ".join(valid_audiences)}'}), 400
+        
+        with db_connection.get_cursor(commit=True) as cursor:
+            # Insert bulk notification record
+            cursor.execute("""
+                INSERT INTO bulk_notifications (audience, type, title, message, sent_by)
+                VALUES (%s, %s, %s, %s, %s)
+                RETURNING id, created_at
+            """, (data['audience'], data['type'], data['title'], data['message'], admin_id))
+            bulk_notification = cursor.fetchone()
+            
+            # Send to individual users based on audience
+            recipients_count = 0
+            if data['audience'] == 'all':
+                cursor.execute("""
+                    INSERT INTO notifications (user_id, type, title, message, created_by)
+                    SELECT id, 'ANNOUNCEMENT', %s, %s, %s
+                    FROM users WHERE is_active = true
+                """, (data['title'], data['message'], admin_id))
+                recipients_count = cursor.rowcount
+            elif data['audience'] == 'citizens':
+                cursor.execute("""
+                    INSERT INTO notifications (user_id, type, title, message, created_by)
+                    SELECT id, 'ANNOUNCEMENT', %s, %s, %s
+                    FROM users WHERE role = 'CITIZEN' AND is_active = true
+                """, (data['title'], data['message'], admin_id))
+                recipients_count = cursor.rowcount
+            elif data['audience'] == 'cleaners':
+                cursor.execute("""
+                    INSERT INTO notifications (user_id, type, title, message, created_by)
+                    SELECT id, 'ANNOUNCEMENT', %s, %s, %s
+                    FROM users WHERE role = 'CLEANER' AND is_active = true
+                """, (data['title'], data['message'], admin_id))
+                recipients_count = cursor.rowcount
+        
+        return jsonify({
+            'success': True,
+            'message': 'Bulk notification sent successfully',
+            'data': {
+                'audience': data['audience'],
+                'recipients_count': recipients_count,
+                'sent_at': bulk_notification['created_at'].isoformat()
+            }
+        }), 200
+    
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500

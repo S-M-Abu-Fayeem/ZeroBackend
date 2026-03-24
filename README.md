@@ -80,10 +80,12 @@ FLASK_DEBUG=True
 
 ### Step 4: Initialize Database
 
-Run the schema file:
+Run the Python migrations in `models.py`:
 ```bash
-psql -U zero_user -d zero_db -f schema.sql
+python app.py
 ```
+
+`app.py` calls `setup_database()` from `models.py` when `RERUN_MIGRATIONS=true` (default).
 
 This creates:
 - 25 tables
@@ -205,18 +207,18 @@ user_id = row['id']  # NOT row[0]
 - `Migration` - Schema utilities
 - **Auto-detects Python version for driver**
 
-**`schema.sql`** - Database Schema ⭐
+**`models.py`** - Database Schema & Migrations ⭐
 - **PRIMARY SCHEMA FILE**
-- Creates all tables, indexes, triggers, procedures
+- Defines all tables, indexes, triggers, procedures
 - **Modify this for schema changes**
 
-**`models.py`** - Python Schema (Not Used)
-- Python version of schema
-- Currently not used - we use schema.sql
+**`deliverables/schema.sql`** - SQL Export (Reference)
+- Optional SQL deliverable snapshot
+- Not used by runtime initialization
 
-**`verify_schema.sql`** - Schema Checker
-- Verifies schema installation
-- **Use for debugging**
+**Schema Checks**
+- Use `psql` inspection commands (`\dt`, `\d <table>`, counts)
+- Use API health endpoint `GET /api/health`
 
 **`mock.py`** - Test Data Generator
 - Generates realistic test data
@@ -373,12 +375,12 @@ user_id = row[0]  # Don't use tuple indexing
 
 ### Making Database Changes
 
-1. Edit `schema.sql`
+1. Edit `models.py` (`_create_tables`, `_create_indexes`, `_create_triggers`, `_create_procedures`)
 2. Drop and recreate database:
    ```bash
    psql -U postgres -c "DROP DATABASE zero_db;"
    psql -U postgres -c "CREATE DATABASE zero_db OWNER zero_user;"
-   psql -U zero_user -d zero_db -f schema.sql
+    python app.py
    ```
 3. Reload test data: `python mock.py`
 4. Test changes
@@ -470,7 +472,7 @@ curl http://localhost:5000/api/citizen/reports -H "Authorization: Bearer TOKEN"
 
 ### Add New Table
 
-Edit `schema.sql`:
+Edit `models.py` inside `_create_tables(migration)`:
 ```sql
 CREATE TABLE IF NOT EXISTS new_table (
     id VARCHAR(36) PRIMARY KEY DEFAULT gen_random_uuid()::text,
@@ -488,7 +490,7 @@ Update `mock.py` to generate test data.
 
 ### Add New Trigger
 
-Edit `schema.sql`:
+Edit `models.py` inside `_create_triggers(migration)`:
 ```sql
 CREATE OR REPLACE FUNCTION my_trigger_function()
 RETURNS TRIGGER AS $$
@@ -507,7 +509,7 @@ Recreate database and test.
 
 ### Add New Stored Procedure
 
-Edit `schema.sql`:
+Edit `models.py` inside `_create_procedures(migration)`:
 ```sql
 CREATE OR REPLACE FUNCTION my_procedure(p_user_id VARCHAR)
 RETURNS TABLE(result_column VARCHAR) AS $$
@@ -554,14 +556,14 @@ psql -U zero_user -d zero_db -c "\d users"
 # Check data
 psql -U zero_user -d zero_db -c "SELECT COUNT(*) FROM users;"
 
-# Run verification
-psql -U zero_user -d zero_db -f verify_schema.sql
+# Quick health check
+curl http://localhost:5000/api/health
 ```
 
 ### Common Issues
 
 **"relation does not exist"**
-→ Run `schema.sql` again
+→ Run `python app.py` with `RERUN_MIGRATIONS=true`
 
 **"column does not exist"**
 → Check column name in schema
@@ -591,8 +593,8 @@ psql -U postgres -c "CREATE DATABASE zero_db OWNER zero_user;"
 psql -U postgres -d zero_db -c "GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO zero_user;"
 psql -U postgres -d zero_db -c "GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO zero_user;"
 
-# Run schema
-psql -U zero_user -d zero_db -f schema.sql
+# Run migrations
+python app.py
 
 # Load data
 python mock.py
@@ -656,7 +658,7 @@ deactivate
 7. ✅ Use ENUM types for categories
 8. ✅ Document your code
 9. ✅ Test endpoints after changes
-10. ✅ Keep `schema.sql` as source of truth
+10. ✅ Keep `models.py` as source of truth
 
 ---
 
@@ -664,7 +666,7 @@ deactivate
 
 1. Check this README
 2. Check error logs in terminal
-3. Verify database with `verify_schema.sql`
+3. Verify database with `psql` checks and `GET /api/health`
 4. Check test data with `mock.py`
 5. Review documentation files
 6. Ask team members
