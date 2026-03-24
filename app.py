@@ -36,7 +36,11 @@ CORS(app,
 # Initialize database connection pool (schema assumed to be pre-initialized)
 db_connection.create_pool()
 
-ensure_default_superadmin()
+if os.getenv('BOOTSTRAP_SUPERADMIN_ON_START', 'true').lower() == 'true':
+    try:
+        ensure_default_superadmin()
+    except Exception as exc:
+        print(f"⚠ Superadmin bootstrap skipped during startup: {exc}")
 
 # Create model instances
 users_model = Model(db_connection, 'users')
