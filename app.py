@@ -21,8 +21,14 @@ if not app.config['SECRET_KEY']:
     raise RuntimeError('Missing required SECRET_KEY environment variable. Set it in ZeroBackend/.env')
 
 # Configure CORS
+frontend_origins_env = os.getenv('FRONTEND_ORIGINS', '').strip()
+if frontend_origins_env:
+    allowed_origins = [origin.strip() for origin in frontend_origins_env.split(',') if origin.strip()]
+else:
+    allowed_origins = ["http://localhost:3000", "http://127.0.0.1:3000"]
+
 CORS(app, 
-     resources={r"/api/*": {"origins": ["http://localhost:3000", "http://127.0.0.1:3000"]}},
+     resources={r"/api/*": {"origins": allowed_origins}},
      methods=['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
      allow_headers=['Content-Type', 'Authorization'],
      supports_credentials=True)

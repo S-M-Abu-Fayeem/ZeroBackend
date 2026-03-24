@@ -15,6 +15,69 @@ A Flask + PostgreSQL backend powering role-based workflows for citizens reportin
 
 ---
 
+## Deploy on Render (Backend + PostgreSQL)
+
+This repository now includes a Render Blueprint file at [render.yaml](../render.yaml) that provisions:
+
+- A managed PostgreSQL instance on Render
+- A Python web service for this Flask backend
+- Environment variable wiring from the Render database into the backend service
+
+### 1. Push code to GitHub
+
+Render deploys from your Git repository. Make sure your latest backend code is pushed.
+
+### 2. Create services from Blueprint
+
+1. Open Render Dashboard.
+2. Click New > Blueprint.
+3. Connect your GitHub repo.
+4. Select this repository and deploy.
+
+Render reads [render.yaml](../render.yaml) and creates:
+
+- Database: zero-postgres
+- Web service: zero-backend (rootDir: ZeroBackend)
+
+### 3. Set required secret environment variables
+
+In Render service settings for zero-backend, set:
+
+- SUPERADMIN_PASSWORD (required by startup logic)
+
+Optional secrets depending on features:
+
+- HF_TOKEN (for HuggingFace-powered AI)
+- GROQ_API_KEY (for Groq AI fallback)
+
+### 4. Configure frontend origin for CORS
+
+Set FRONTEND_ORIGINS to your deployed frontend URL. For multiple domains, use comma-separated values.
+
+Example:
+
+- https://your-frontend-domain.onrender.com
+- https://your-frontend-domain.onrender.com,http://localhost:3000
+
+### 5. Initialize database schema (first deploy)
+
+Because this project intentionally runs schema setup explicitly, open a Render Shell on zero-backend and run:
+
+```bash
+python -c "from models import db_connection, setup_database; db_connection.create_pool(); setup_database(); db_connection.close_pool()"
+```
+
+Then restart the web service.
+
+### 6. Verify deployment
+
+- Health endpoint: GET /api/health
+- API root endpoint: GET /
+
+If health returns database disconnected, verify DB_* env vars and that the database service is running.
+
+---
+
 ## Database Design — 3NF Relational Model
 
 ### Core Principle
