@@ -82,6 +82,7 @@ def _create_tables(migration):
             push_notifications BOOLEAN DEFAULT true,
             notify_report_updates BOOLEAN DEFAULT true,
             notify_news_updates BOOLEAN DEFAULT false,
+            is_superadmin BOOLEAN DEFAULT false,
             dark_mode BOOLEAN DEFAULT false,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             created_by VARCHAR(36) REFERENCES users(id),

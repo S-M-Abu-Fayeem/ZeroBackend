@@ -5,8 +5,17 @@ from flask import request, jsonify
 from functools import wraps
 import jwt
 import os
+from dotenv import load_dotenv
 
-SECRET_KEY = os.getenv('SECRET_KEY', 'your-secret-key-change-in-production')
+load_dotenv()
+
+
+def _get_secret_key() -> str:
+    """Load JWT secret from environment after dotenv is initialized."""
+    secret_key = os.getenv('SECRET_KEY')
+    if not secret_key:
+        raise RuntimeError('Missing required SECRET_KEY environment variable. Set it in ZeroBackend/.env')
+    return secret_key
 
 
 def token_required(f):
@@ -33,7 +42,8 @@ def token_required(f):
         
         try:
             # Decode token
-            data = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
+            secret_key = _get_secret_key()
+            data = jwt.decode(token, secret_key, algorithms=["HS256"])
             current_user = users_model.find_by_id(data['user_id'])
             
             if not current_user:
@@ -66,3 +76,18 @@ def role_required(*roles):
             return f(*args, **kwargs)
         return decorated_function
     return decorator
+
+
+def superadmin_required(f):
+    """Decorator to ensure current user is marked as superadmin."""
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if not hasattr(request, 'current_user'):
+            return jsonify({'success': False, 'error': 'Authentication required'}), 401
+
+        if request.current_user.get('role') != 'ADMIN' or not request.current_user.get('is_superadmin', False):
+            return jsonify({'success': False, 'error': 'Superadmin permissions required'}), 403
+
+        return f(*args, **kwargs)
+
+    return decorated_function

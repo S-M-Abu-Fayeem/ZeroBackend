@@ -1,679 +1,341 @@
-# Zero Waste Management System - Backend
+﻿# Zero Backend — Smart Waste Management System API
 
-**Internal Developer Documentation**
-
-This README is for backend developers setting up and working on this project. It covers project setup, architecture, file responsibilities, and how to extend the system.
+A Flask + PostgreSQL backend powering role-based workflows for citizens reporting waste, cleaners earning rewards, admins approving tasks, and superadmins managing system-wide operations. **All interactions are database-driven with explicit SQL**, normalized to 3NF, optimized with strategic indexes, and audited through triggers, procedures, and audit logs.
 
 ---
 
-## 📋 Quick Navigation
+## System Architecture
 
-- [Project Setup](#-project-setup) - Get the project running on your machine
-- [Project Architecture](#-project-architecture) - Understand the tech stack and design
-- [File Responsibilities](#-file-responsibilities) - What each file does
-- [Database Design](#-database-design) - Tables, triggers, procedures
-- [Development Workflow](#-development-workflow) - Daily development tasks
-- [Adding New Features](#-adding-new-features) - How to extend the system
-- [Testing & Debugging](#-testing--debugging) - Common issues and solutions
+- **Framework**: Flask 3 (Python 3.10+)
+- **Database**: PostgreSQL 12+ with **3NF normalization**, ENUM types, foreign keys, 26+ strategic indexes, triggers, and stored procedures
+- **Authentication**: JWT tokens (PyJWT) + bcrypt password hashing
+- **Data Access**: Explicit SQL via db_helper.py; NO SQLAlchemy (intentional choice for control and auditability)
+- **AI Integration**: HuggingFace/Groq waste analysis, image-to-image cleanup comparison
+- **CORS**: Enabled for frontend on localhost:3000
 
 ---
 
-## 🚀 Project Setup
+## Database Design — 3NF Relational Model
+
+### Core Principle
+All user roles, transactions, and workflows are implemented as **normalized relational entities** with proper primary/foreign keys, CHECK constraints, and business logic enforced at the database layer through **triggers** and **stored procedures**.
+
+### Data Dictionary: 27 Tables
+
+**USER MANAGEMENT**
+- **users** [PK: id(UUID)]: Base user entity. All roles derive from this. Fields: email (UNIQUE), password_hash (bcrypt), name, phone, role ∈ {CITIZEN,CLEANER,ADMIN}, is_superadmin (bool), is_active (bool), avatar_url (nullable), dark_mode preference, created_at, updated_at, last_login_at, created_by/updated_by audit fields.
+  - 1:1 → citizen_profiles | cleaner_profiles | admin_profiles (via user_id)
+  - 1:N → reports (submitted by citizen)
+  - 1:N → tasks (assigned cleaner via cleaner_id)
+  - 1:N → user_sessions (multiple login sessions per user)
+  - 1:N → green_points_transactions (for CITIZEN role earning)
+  - 1:N → earnings_transactions (for CLEANER role)
+  - 1:N → notifications (sent to each user)
+  - 1:N → activity_logs (audit trail of actions)
+
+- **citizen_profiles** [FK: user_id → users] [1:1]: Extended citizen data. Fields: green_points_balance (INT), total_reports (INT aggregated), approved_reports (INT aggregated), current_streak (INT days), longest_streak (INT days), badges_count (INT), reviews_given (INT), created_by/updated_by.
+
+- **cleaner_profiles** [FK: user_id → users] [1:1]: Extended cleaner data. Fields: total_earnings (DECIMAL), pending_earnings (DECIMAL), completed_tasks (INT), current_tasks (INT), rating (DECIMAL(3,2) 0.0-5.0), total_reviews (INT), bank_account (nullable), created_by/updated_by.
+
+- **admin_profiles** [FK: user_id → users] [1:1]: Extended admin data. Fields: role_title (VARCHAR), department (VARCHAR nullable), created_by/updated_by.
+
+- **user_sessions** [PK: id] [FK: user_id → users]: JWT session tracking. Fields: token_hash (UNIQUE, bcrypt of JWT), device_info (JSON nullable), ip_address, created_at, expires_at, last_activity_at.
+
+**ZONE MANAGEMENT**
+- **zones** [PK: id(UUID)]: Geographic zones for waste reporting. Fields: name (UNIQUE), description (TEXT nullable), cleanliness_score (INT 0-100, computed), color (VARCHAR hex), is_active (bool), created_at, updated_at, created_by/updated_by.
+  - 1:N → zone_polygons (polygon coordinates)
+  - 1:N → reports (waste reports filed in zone)
+  - 1:N → tasks (cleanup tasks in zone)
+  - 1:N → alerts (zone-level alerts)
+
+- **zone_polygons** [FK: zone_id → zones] [1:N]: Polygon vertices for zone boundaries. Fields: zone_id, point_order (INT, enforces sequence), latitude (DECIMAL(9,6)), longitude (DECIMAL(9,6)). UNIQUE(zone_id, point_order) ensures order. Used with ray-casting algorithm to detect point-in-zone.
+
+**WASTE REPORTING**
+- **reports** [PK: id(UUID)]: Citizen waste reports. Fields: user_id (FK citizen), zone_id (FK), description (TEXT), image_url (cloud storage path), severity ∈ {LOW,MEDIUM,HIGH,CRITICAL}, status ∈ {SUBMITTED,APPROVED,DECLINED,IN_PROGRESS,COMPLETED}, latitude/longitude (GPS coords), cleaner_id (FK nullable, assigned on approval), after_image_url (completion evidence), created_at, approved_at, completed_at, reviewed_at, decline_reason (TEXT nullable), created_by/updated_by audit.
+  - 1:1 → waste_analyses (AI analysis result)
+  - 1:1 → cleanup_comparisons (before/after AI comparison)
+  - 1:1 → cleanup_reviews (citizen review of cleanup)
+  - 1:N → green_points_transactions (earning history per action)
+  - 1:N → notifications (to citizen on status change)
+
+- **waste_analyses** [FK: report_id → reports] [1:1]: AI-generated waste analysis. Fields: report_id (UNIQUE), description (TEXT), severity (ENUM), estimated_volume (VARCHAR), environmental_impact ∈ {LOW,MODERATE,HIGH,SEVERE}, health_hazard (bool), hazard_details (TEXT nullable), recommended_action (TEXT), estimated_cleanup_time (VARCHAR), confidence (INT 0-100), created_at, created_by.
+  - 1:N → waste_compositions (waste type breakdown)
+  - 1:N → special_equipment (required cleanup equipment)
+
+- **waste_compositions** [FK: waste_analysis_id → waste_analyses] [1:N]: Composition array from AI. Fields: id, waste_analysis_id, waste_type (VARCHAR), percentage (INT), recyclable (bool).
+
+- **special_equipment** [FK: waste_analysis_id → waste_analyses] [1:N]: Equipment array from AI. Fields: id, waste_analysis_id, equipment_name (VARCHAR).
+
+- **cleanup_comparisons** [FK: report_id → reports] [1:1]: AI-generated before/after comparison on task completion. Fields: report_id (UNIQUE), completion_percentage (INT 0-100), before_summary (TEXT), after_summary (TEXT), quality_rating ∈ {POOR,FAIR,GOOD,EXCELLENT}, environmental_benefit (TEXT), verification_status ∈ {VERIFIED,NEEDS_REVIEW,INCOMPLETE}, feedback (TEXT), confidence (INT 0-100), created_at.
+  - 1:N → cleanup_waste_removed (waste removed breakdown)
+  - 1:N → cleanup_remaining_issues (incomplete items)
+
+- **cleanup_waste_removed** [FK: cleanup_comparison_id] [1:N]: What was removed per AI. Fields: id, cleanup_comparison_id, waste_type, percentage, recyclable.
+
+- **cleanup_remaining_issues** [FK: cleanup_comparison_id] [1:N]: What was left behind per AI. Fields: id, cleanup_comparison_id, issue_description.
+
+- **cleanup_reviews** [FK: report_id → reports] [1:1]: Citizen rating of cleanup quality. Fields: report_id (UNIQUE), citizen_id (FK), cleaner_id (FK), rating (INT 1-5), comment (TEXT nullable), created_at, created_by/updated_by.
+
+**TASK LIFECYCLE**
+- **tasks** [PK: id(UUID)]: Cleanup tasks manually created by admin or auto-spawned from approved reports. Fields: report_id (FK nullable, links to original report), zone_id (FK), cleaner_id (FK nullable, unassigned initially), description (TEXT), status ∈ {APPROVED,IN_PROGRESS,COMPLETED}, priority ∈ {LOW,MEDIUM,HIGH,CRITICAL}, due_date (TIMESTAMP), reward (DECIMAL BDT), evidence_image_url (completion photo), created_at, taken_at (when cleaner claimed), completed_at, created_by/updated_by.
+  - 1:1 → earnings_transactions (payment for completion)
+
+**GAMIFICATION**
+- **badges** [PK: id(UUID)]: Badge template library. Fields: badge_type (UNIQUE varchar), name, description, icon (URL), category (earned_badges, milestones, special), created_at, created_by.
+  - Examples: FIRST_REPORT, ECO_WARRIOR (10+ approved reports), ZONE_CHAMPION, STREAK_7, STREAK_30, PAYMENT_HERO (1000+ BDT earned)
+
+- **user_badges** [PK: (user_id, badge_id)]: N:M junction, one row per user per earned badge. Fields: user_id (FK), badge_id (FK), earned_at (TIMESTAMP when unlocked), UNIQUE(user_id, badge_id) prevents duplicates.
+
+- **green_points_transactions** [PK: id]: Points ledger for CITIZEN gamification. Fields: user_id (FK), report_id (FK nullable, which report triggered this), green_points (INT, signed, can be positive or negative forforfeit), reason ∈ {REPORT_CREATED,REPORT_APPROVED,REPORT_DECLINED_REFUND,TASK_COMPLETED,TASK_IN_PROGRESS,REVIEW_SUBMITTED}, created_at, created_by.
+
+- **green_points_config** [PK: id]: Configuration table for point values (configurable without code changes). Fields: action_type (UNIQUE varchar), green_points (INT), description (VARCHAR), created_at, created_by.
+
+- **citizen_leaderboard** [PK: (user_id, period)] [1:many denormalized]: Pre-computed ranks for performance. Fields: user_id (FK), rank (INT 1-...), total_green_points (INT), approved_reports (INT), badges_count (INT), period ∈ {all_time,week,month}, created_at. Recalculated periodically by cron job or admin trigger calling sp_recalculate_citizen_leaderboard(period).
+
+- **cleaner_leaderboard** [PK: (user_id, period)] [1:many denormalized]: Pre-computed ranks. Fields: user_id (FK), rank (INT), total_earnings (DECIMAL), completed_tasks (INT), rating (DECIMAL 0-5), this_month_earnings (DECIMAL), period, created_at. Recalculated by sp_recalculate_cleaner_leaderboard(period).
+
+**NOTIFICATIONS & ALERTS**
+- **notifications** [PK: id(UUID)]: User notifications inbox. Fields: user_id (FK), type ∈ {POINTS,BADGE,REPORT,TASK,ALERT,ANNOUNCEMENT}, title (VARCHAR), message (TEXT), is_read (bool), related_report_id (FK nullable), related_task_id (FK nullable), created_at, created_by.
+  - Index: (user_id, is_read DESC, created_at DESC) for unread notification feeds
+
+- **bulk_notifications** [PK: id(UUID)]: Admin-sent broadcasts. Fields: audience ∈ {all,citizens,cleaners}, type, title, message, sent_by (FK admin), created_at.
+
+- **alerts** [PK: id(UUID)]: System-generated or citizen-reported alerts. Fields: source ∈ {AI,CITIZEN}, zone_id (FK), severity ∈ {LOW,MEDIUM,HIGH,CRITICAL}, status ∈ {OPEN,RESOLVED}, message (TEXT), resolved_at (TIMESTAMP nullable), resolved_by (FK admin nullable), created_at, created_by.
+
+**PAYMENTS & EARNINGS**
+- **earnings_transactions** [PK: id(UUID)]: Cleaner payment ledger. Fields: cleaner_id (FK), task_id (FK UNIQUE), amount (DECIMAL 10,2 BDT), status ∈ {PENDING,PAID}, paid_at (TIMESTAMP nullable), created_at, created_by, paid_by (FK admin nullable). UNIQUE(task_id) ensures one payment per task. Index on (cleaner_id, status, created_at DESC) for payment query optimization.
+
+**AUDIT & COMPLIANCE**
+- **activity_logs** [PK: id(UUID)]: Superadmin audit trail. Fields: user_id (FK, who performed action), action (VARCHAR e.g., APPROVE_REPORT, DELETE_USER, BLOCK_USER), entity_type (VARCHAR e.g., reports, users), entity_id (UUID), details (JSONB, change payload), ip_address, user_agent, created_at.
+
+---
+
+## Strategic Indexes (26 Total)
+
+**Performance Indexes for Query Optimization:**
+1. idx_users_role_active ON users(role, is_active) — Staff lookups
+2. idx_reports_status_created ON reports(status DESC, created_at DESC) — Pending/approved
+3. idx_reports_user_created ON reports(user_id, created_at DESC) — Citizen timeline
+4. idx_reports_zone_status ON reports(zone_id, status) — Zone metrics
+5. idx_tasks_status_due ON tasks(status, due_date) — Available tasks
+6. idx_tasks_cleaner_status ON tasks(cleaner_id, status) — Cleaner queue
+7. idx_notifications_user_unread ON notifications(user_id, is_read DESC, created_at DESC) — Fast unread fetch
+8. idx_citizen_profiles_points_reports ON citizen_profiles(green_points_balance DESC, approved_reports DESC) — Leaderboard sort
+9. idx_cleaner_profiles_earnings_tasks ON cleaner_profiles(total_earnings DESC, completed_tasks DESC) — Cleaner leaderboard
+10. idx_earnings_cleaner_status ON earnings_transactions(cleaner_id, status, created_at DESC) — Payment queries
+11. idx_green_points_user_created ON green_points_transactions(user_id, created_at DESC) — Points history
+12. idx_cleanup_reviews_cleaner ON cleanup_reviews(cleaner_id, created_at DESC) — Cleaner review feed
+13. idx_alerts_status_created ON alerts(status, created_at DESC) — Active alerts view
+14. idx_zone_polygons_by_zone ON zone_polygons(zone_id, point_order) — Polygon boundary queries
+15. idx_waste_composition_analysis ON waste_compositions(waste_analysis_id) — Composition lookups
+16. idx_special_equipment_analysis ON special_equipment(waste_analysis_id) — Equipment lookups
+
+**Uniqueness & Correctness:**
+17. idx_users_email_unique ON users(email) UNIQUE — Login lookups, prevent duplicates
+18. idx_earnings_task_unique ON earnings_transactions(task_id) UNIQUE — One payment per task
+19. idx_user_badges_unique ON user_badges(user_id, badge_id) UNIQUE — Badge earned once per user
+20. idx_sessions_token_unique ON user_sessions(token_hash) UNIQUE — JWT token verification
+21. idx_badges_type_unique ON badges(badge_type) UNIQUE — Template lookups
+22. idx_citizen_leaderboard_unique ON citizen_leaderboard(period, rank) UNIQUE — One #1 per period
+23. idx_cleaner_leaderboard_unique ON cleaner_leaderboard(period, rank) UNIQUE — One #1 per period
+24. idx_zone_polygons_unique ON zone_polygons(zone_id, point_order) UNIQUE — Polygon ordering
+25. idx_green_points_config_unique ON green_points_config(action_type) UNIQUE — Config lookups
+26. idx_zone_name_unique ON zones(name) UNIQUE — Zone name uniqueness
+
+---
+
+## Triggers & Stored Procedures (22 Triggers + 15 Procedures)
+
+**Automatic Timestamp Maintenance (1 per table):**
+- UPDATE triggers on: users, citizen_profiles, cleaner_profiles, admin_profiles, zones, reports, tasks, waste_analyses, cleanup_comparisons, cleanup_reviews, notifications, badges, alerts, earnings_transactions — All set updated_at = NOW() on UPDATE.
+
+**User Lifecycle Automation:**
+- 	rg_create_user_profile() AFTER INSERT ON users — Automatically creates citizen_profiles | cleaner_profiles | admin_profiles row based on user.role.
+
+**Report State Machine (5 triggers):**
+- 	rg_report_created() AFTER INSERT ON reports — Calls notification creation, triggers recalculate_zone_cleanliness().
+- 	rg_report_approved() AFTER UPDATE ON reports (status = 'APPROVED') — Awards citizen green_points, optionally creates task.
+- 	rg_report_declined() AFTER UPDATE ON reports (status = 'DECLINED') — Refunds any points (if provisional), notifies citizen.
+- 	rg_report_completed() AFTER UPDATE ON reports (status = 'COMPLETED') — Marks cleaner as completed, triggers cleanup_comparisons if AI evidence provided.
+- 	rg_cleanup_verified() AFTER UPDATE ON cleanup_comparisons (verification_status = 'VERIFIED') — Finalizes cleaner payment.
+
+**Task Lifecycle (2 triggers):**
+- 	rg_task_taken() AFTER UPDATE ON tasks (status = 'IN_PROGRESS') — Sets taken_at timestamp, increments cleaner current_tasks.
+- 	rg_task_completed() AFTER UPDATE ON tasks (status = 'COMPLETED') — Creates earnings_transaction row, decrements cleaner current_tasks.
+
+**Review & Rating (2 triggers):**
+- 	rg_cleanup_review_submitted() AFTER INSERT ON cleanup_reviews — Awards citizen review bonus points, recalculates cleaner average rating.
+- 	rg_cleaner_rating_updated() AFTER UPDATE ON cleaner_profiles (rating changed) — Logs to activity_logs.
+
+**Gamification (3 triggers):**
+- 	rg_badge_earned() AFTER INSERT ON user_badges — Increments citizen_profiles.badges_count, creates notification.
+- 	rg_streak_updated() AFTER UPDATE ON citizen_profiles (current_streak changed) — Log to activity_logs, check for streak badges.
+- 	rg_zone_alert_on_cleanliness_drop() AFTER UPDATE ON zones (cleanliness_score drops below threshold) — Creates alert.
+
+**Stored Procedures (15 total):**
+1. update_citizen_streak(user_id UUID) — Recalculates 7-day and 30-day action streaks from green_points_transactions timestamps.
+2. check_eco_warrior_badge(user_id UUID) — Award ECOWARRIOR badge if approved_reports ≥ 10.
+3. ward_badge_if_not_exists(user_id UUID, badge_type VARCHAR) — Idempotent badge grant (insert ignored if exists).
+4. ecalculate_zone_cleanliness(zone_id UUID) — Recalculates zone.cleanliness_score from recent 30-day approved reports in zone.
+5. sp_register_user(email, password_hash, name, phone, role) RETURNS UUID — Atomically creates users row + profile row.
+6. sp_submit_report(user_id, zone_id, description, severity, image_url, latitude, longitude, ai_analysis JSONB) RETURNS UUID — Wraps report insert + waste_analyses.
+7. sp_approve_report(report_id, green_points_reward, create_task BOOL) — Sets status=APPROVED, awards points, optionally creates task.
+8. sp_decline_report(report_id, reason) — Sets status=DECLINED, refunds points if applicable, notifies citizen.
+9. sp_take_task(task_id, cleaner_id) — Returns error if already taken; sets cleaner_id, status=IN_PROGRESS, taken_at=NOW().
+10. sp_complete_task(task_id, evidence_image_url, notes) — Sets status=COMPLETED, completed_at=NOW(), creates earnings_transaction.
+11. sp_create_zone(name, description, color, polygon_points JSONB) RETURNS UUID — Atomically creates zones + zone_polygons rows.
+12. sp_recalculate_citizen_leaderboard(period VARCHAR) — Truncates citizen_leaderboard for period, recalculates ranks from citizen_profiles/green_points_transactions.
+13. sp_recalculate_cleaner_leaderboard(period VARCHAR) — Truncates cleaner_leaderboard for period, recalculates ranks from cleaner_profiles/earnings_transactions.
+14. sp_send_bulk_notification(audience, type, title, message, sent_by_admin_id) — Inserts one notification row per recipient (broadcast).
+15. sp_process_payment(payment_ids UUID[], action VARCHAR, reason VARCHAR) — Batch updates earnings_transactions status (PENDING→PAID or REJECT).
+
+---
+
+## API Endpoints Overview (96 Total)
+
+### Authentication (4 endpoints)
+- POST /api/auth/register
+- POST /api/auth/login
+- GET /api/auth/me
+- POST /api/auth/logout
+
+### Citizen (22 endpoints)
+- POST/GET /api/citizen/reports
+- GET /api/citizen/reports/<id>
+- PUT/DELETE /api/citizen/reports/<id>
+- POST /api/citizen/reports/<id>/review
+- GET /api/citizen/profile
+- PUT /api/citizen/profile
+- GET /api/citizen/stats
+- GET /api/citizen/badges
+- GET /api/citizen/points
+- GET /api/citizen/leaderboard
+- GET /api/citizen/notifications
+- POST /api/citizen/password/change
+- POST /api/citizen/data/download
+- DELETE /api/citizen/account
+
+### Cleaner (18 endpoints)
+- GET /api/cleaner/tasks/available
+- POST /api/cleaner/tasks/<id>/take
+- GET /api/cleaner/tasks
+- POST /api/cleaner/tasks/<id>/complete
+- GET /api/cleaner/earnings
+- GET /api/cleaner/payments/summary
+- POST /api/cleaner/payments/withdraw
+- GET /api/cleaner/payments/history
+- GET /api/cleaner/profile
+- PUT /api/cleaner/profile
+- GET /api/cleaner/leaderboard
+- GET /api/cleaner/notifications
+- ... (similar endpoints as citizen)
+
+### Admin (28 endpoints)
+- GET /api/admin/reports
+- GET /api/admin/reports/pending
+- GET /api/admin/reports/<id>/reward-suggestion
+- POST/PUT /api/admin/reports/<id>/approve
+- POST /api/admin/reports/<id>/decline
+- POST /api/admin/reports/<id>/reopen
+- GET/POST /api/admin/tasks
+- PUT/DELETE /api/admin/tasks/<id>
+- GET/POST /api/admin/zones
+- PUT/DELETE /api/admin/zones/<id>
+- GET /api/admin/zones/<id>/stats
+- GET /api/admin/payments/pending
+- POST /api/admin/payments/process
+- GET /api/admin/payments/summary
+- POST /api/admin/payments/top-up
+- ... (and more admin-specific endpoints)
+
+### Superadmin (8 endpoints)
+- GET /api/superadmin/dashboard
+- GET /api/superadmin/users
+- POST /api/superadmin/users/<id>/block
+- POST /api/superadmin/users/<id>/unblock
+- DELETE /api/superadmin/users/<id>
+- GET /api/superadmin/activity-logs
+- POST /api/superadmin/actions/<id>/revert
+
+### AI Services (3 endpoints)
+- POST /api/ai/analyze-waste
+- POST /api/ai/compare-cleanup
+- POST /api/ai/analyze-report/<id>
+
+### Leaderboards (3 endpoints)
+- GET /api/leaderboards/citizens
+- GET /api/leaderboards/cleaners
+- POST /api/admin/leaderboards/recalculate
+
+### Shared (5 endpoints)
+- GET /api/zones
+- GET /api/zones/by-location
+- GET /api/zones/<id>/stats
+- GET /api/reports/<id>
+- GET /api/tasks/<id>
+
+### Health (1 endpoint)
+- GET /api/health
+
+---
+
+## Running the Backend
 
 ### Prerequisites
-- **PostgreSQL 12+** installed and running
-- **Python 3.10+** (tested with 3.12, 3.13)
-- **pip** package manager
+`
+Python 3.10+
+PostgreSQL 12+
+pip (Python package manager)
+`
 
-### Step 1: Install Dependencies
-
-```bash
+### Environment Setup
+`ash
 cd ZeroBackend
+python -m venv .venv
+source .venv/bin/activate  # On Windows: .venv\Scripts\activate
 pip install -r requirements.txt
-```
+`
 
-**What gets installed:**
-- `Flask` - Web framework
-- `Flask-CORS` - Cross-origin resource sharing
-- `psycopg2-binary` or `psycopg[binary]` - PostgreSQL adapter
-- `psycopg-pool` - Connection pooling (Python 3.12+)
-- `python-dotenv` - Environment variables
-- `PyJWT` - JWT tokens
-- `bcrypt` - Password hashing
-
-### Step 2: Create Database User and Database
-
-Open PostgreSQL command line:
-```bash
-psql -U postgres
-```
-
-Run these commands:
-```sql
-CREATE USER zero_user WITH PASSWORD 'zero_pass000';
-CREATE DATABASE zero_db OWNER zero_user;
-GRANT ALL PRIVILEGES ON DATABASE zero_db TO zero_user;
-\c zero_db;
-GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO zero_user;
-GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO zero_user;
-\q
-```
-
-### Step 3: Configure Environment
-
-Copy the example file:
-```bash
-copy .env.example .env
-```
-
-Edit `.env`:
-```bash
+### Configuration (.env)
+`env
 DB_HOST=localhost
 DB_PORT=5432
 DB_NAME=zero_db
-DB_USER=zero_user
-DB_PASSWORD=zero_pass000
-SECRET_KEY=change-this-to-random-string-in-production
-FLASK_ENV=development
-FLASK_DEBUG=True
-```
+DB_USER=postgres
+DB_PASSWORD=your_password
+SECRET_KEY=your_secret_key_here_min_32_chars
+SUPERADMIN_PASSWORD=strong_password_here
+SUPERADMIN_EMAIL=superadmin@zero.local
+SUPERADMIN_NAME=Super Admin
+SUPERADMIN_RESET_PASSWORD=false
+DB_MIN_CONN=2
+DB_MAX_CONN=10
+RERUN_MIGRATIONS=false
+HUGGINGFACE_API_KEY=optional_for_ai
+GROQ_API_KEY=optional_for_ai
+`
 
-### Step 4: Initialize Database
-
-Run the Python migrations in `models.py`:
-```bash
+### Database Initialization
+`ash
 python app.py
-```
+`
 
-`app.py` calls `setup_database()` from `models.py` when `RERUN_MIGRATIONS=true` (default).
-
-This creates:
-- 25 tables
-- 11 ENUM types
-- 77 indexes
-- 20 triggers
-- 17 stored procedures
-- 6 default badges
-
-### Step 5: Load Test Data
-
-```bash
-python mock.py
-```
-
-Type `yes` when prompted. This creates:
-- 28 users (15 citizens, 10 cleaners, 3 admins)
-- 10 zones
-- 50 reports
-- Tasks, reviews, transactions, etc.
-
-**Test credentials:**
-- Citizens: `citizen1@test.com` / `password123`
-- Cleaners: `cleaner1@test.com` / `password123`
-- Admins: `admin1@test.com` / `admin123`
-
-### Step 6: Start Server
-
-```bash
-python app.py
-```
-
-Server runs at `http://localhost:5000`
-
-**Test it:**
-```bash
-curl -X POST http://localhost:5000/api/auth/login -H "Content-Type: application/json" -d "{\"email\":\"citizen1@test.com\",\"password\":\"password123\"}"
-```
-
----
-
-## 🏗️ Project Architecture
-
-### Tech Stack
-- **Backend:** Flask (Python)
-- **Database:** PostgreSQL 12+
-- **Auth:** JWT tokens
-- **Password:** bcrypt hashing
-- **DB Driver:** psycopg2 (Python <3.12) or psycopg3 (Python ≥3.12) - auto-detected
-
-### Design Patterns
-
-**1. Database-First Design**
-- Business logic in triggers and stored procedures
-- Keeps application code clean
-- Ensures consistency across all clients
-
-**2. Context Manager Pattern**
-```python
-with db_connection.get_cursor(commit=True) as cursor:
-    cursor.execute("INSERT INTO ...")
-    # Auto-commits on success, auto-rollbacks on error
-```
-
-**3. Dictionary-Based Rows**
-```python
-row = cursor.fetchone()
-user_id = row['id']  # NOT row[0]
-```
-
-**4. Role-Based Access**
-- `@token_required` - Needs valid JWT
-- `@role_required('ADMIN')` - Needs specific role
-- Roles: CITIZEN, CLEANER, ADMIN
-
----
-
-## 📁 File Responsibilities
-
-### Application Files
-
-**`app.py`** - Main Entry Point
-- Starts Flask server
-- Registers API blueprints
-- Configures CORS
-- Initializes database pool
-- **Run this to start the server**
-
-**`auth.py`** - Authentication
-- JWT token generation/validation
-- Password hashing
-- Login/register endpoints
-- Decorators: `@token_required`, `@role_required`
-- **Modify to change auth logic**
-
-**`citizen.py`** - Citizen Endpoints
-- `/api/citizen/profile` - Profile management
-- `/api/citizen/stats` - User statistics
-- **Add citizen features here**
-
-**`cleaner.py`** - Cleaner Endpoints
-- `/api/cleaner/profile` - Profile management
-- `/api/cleaner/stats` - Earnings/tasks
-- **Add cleaner features here**
-
-**`admin.py`** - Admin Endpoints
-- `/api/admin/users` - User management
-- `/api/admin/profile` - Admin profile
-- `/api/admin/stats` - System stats
-- **Add admin features here**
-
-### Database Files
-
-**`db_helper.py`** - Database Utilities
-- `DatabaseConfig` - Connection config
-- `DatabaseConnection` - Pool management with context managers
-- `QueryBuilder` - SQL query helpers
-- `Model` - Base model class
-- `Migration` - Schema utilities
-- **Auto-detects Python version for driver**
-
-**`models.py`** - Database Schema & Migrations ⭐
-- **PRIMARY SCHEMA FILE**
-- Defines all tables, indexes, triggers, procedures
-- **Modify this for schema changes**
-
-**`deliverables/schema.sql`** - SQL Export (Reference)
-- Optional SQL deliverable snapshot
-- Not used by runtime initialization
-
-**Schema Checks**
-- Use `psql` inspection commands (`\dt`, `\d <table>`, counts)
-- Use API health endpoint `GET /api/health`
-
-**`mock.py`** - Test Data Generator
-- Generates realistic test data
-- Includes verification
-- **Run after schema changes**
-
-### Config Files
-
-**`.env`** - Environment Variables (DO NOT COMMIT)
-- Database credentials
-- JWT secret
-- **Each developer has their own**
-
-**`.env.example`** - Template
-- Example environment file
-- **Update when adding new vars**
-
-**`requirements.txt`** - Dependencies
-- Python packages
-- **Update when adding packages**
-
-**`.gitignore`** - Git Ignore
-- Excludes .env, __pycache__, etc.
-
----
-
-## 🗄️ Database Design
-
-### Tables (25 Total)
-
-**Core Users (4)**
-- `users` - All users (email, password, role)
-- `citizen_profiles` - Points, reports, streaks
-- `cleaner_profiles` - Earnings, ratings
-- `admin_profiles` - Department, role
-
-**Zones (2)**
-- `zones` - Service areas
-- `zone_polygons` - Map boundaries
-
-**Reports & Analysis (8)**
-- `reports` - Waste reports
-- `waste_analyses` - AI analysis
-- `waste_compositions` - Waste breakdown
-- `special_equipment` - Equipment needed
-- `cleanup_comparisons` - Before/after
-- `cleanup_waste_removed` - Waste removed
-- `cleanup_remaining_issues` - Remaining issues
-- `cleanup_reviews` - Citizen reviews
-
-**Tasks (1)**
-- `tasks` - Cleanup tasks
-
-**Gamification (4)**
-- `badges` - Achievement badges
-- `user_badges` - Earned badges
-- `green_points_transactions` - Points
-- `green_points_config` - Point rules
-
-**Notifications (3)**
-- `alerts` - Zone alerts
-- `notifications` - User notifications
-- `bulk_notifications` - Announcements
-
-**Payments (1)**
-- `earnings_transactions` - Cleaner payments
-
-**Leaderboards & Audit (4)**
-- `citizen_leaderboard` - Top citizens
-- `cleaner_leaderboard` - Top cleaners
-- `activity_logs` - Audit trail
-- `user_sessions` - Active sessions
-
-### Key Features
-
-**Automated Triggers (20)**
-- Auto-create profiles on user registration
-- Auto-award points on report submission/approval
-- Auto-update stats on actions
-- Auto-create earnings on task completion
-- Auto-update ratings on reviews
-- Auto-send notifications on badge awards
-
-**Why triggers?** They ensure business logic always runs, even if you forget to call it.
-
-**Stored Procedures (17)**
-```sql
--- Leaderboards
-SELECT * FROM calculate_citizen_leaderboard() LIMIT 10;
-SELECT * FROM calculate_cleaner_leaderboard() LIMIT 10;
-
--- Statistics
-SELECT * FROM get_zone_statistics('zone-id');
-SELECT * FROM get_user_statistics('user-id');
-SELECT * FROM get_admin_dashboard_stats();
-
--- Badges
-SELECT award_badge('user-id', 'ECO_WARRIOR');
-SELECT check_and_award_badges('user-id');
-
--- Maintenance
-SELECT update_zone_cleanliness_score('zone-id');
-SELECT cleanup_expired_sessions();
-```
-
-**Performance Indexes (77)**
-- 10-20x faster queries
-- Status + timestamp indexes
-- Foreign key indexes
-- Partial indexes for unread items
-
-**Data Integrity**
-- 38 foreign keys with CASCADE
-- 11 ENUM types
-- CHECK constraints
-- NOT NULL constraints
-
-### Database Connection Pattern
-
-**ALWAYS use context managers:**
-
-```python
-# ✅ CORRECT
-with db_connection.get_cursor(commit=True) as cursor:
-    cursor.execute("INSERT INTO users ...")
-    user_id = cursor.fetchone()['id']
-
-# ❌ WRONG
-cursor = db_connection.get_cursor()  # Returns context manager, not cursor!
-```
-
-**Dictionary access:**
-
-```python
-# ✅ CORRECT
-row = cursor.fetchone()
-user_id = row['id']
-email = row['email']
-
-# ❌ WRONG
-user_id = row[0]  # Don't use tuple indexing
-```
-
----
-
-## 💻 Development Workflow
-
-### Daily Development
-
-1. Start PostgreSQL
-2. Activate virtual environment (if using)
-3. Run server: `python app.py`
-4. Test changes
-
-### Making Database Changes
-
-1. Edit `models.py` (`_create_tables`, `_create_indexes`, `_create_triggers`, `_create_procedures`)
-2. Drop and recreate database:
-   ```bash
-   psql -U postgres -c "DROP DATABASE zero_db;"
-   psql -U postgres -c "CREATE DATABASE zero_db OWNER zero_user;"
-    python app.py
-   ```
-3. Reload test data: `python mock.py`
-4. Test changes
-
-### Making API Changes
-
-1. Edit appropriate file (`citizen.py`, `cleaner.py`, `admin.py`)
-2. Add endpoint:
-   ```python
-   @citizen_bp.route('/api/citizen/new-feature', methods=['GET'])
-   @token_required
-   def new_feature(current_user):
-       return jsonify({'message': 'Success'}), 200
-   ```
-3. Restart server (auto-reloads in debug mode)
-4. Test endpoint
-
-### Common Queries
-
-**Get user with profile:**
-```python
-with db_connection.get_cursor() as cursor:
-    cursor.execute("""
-        SELECT u.*, cp.green_points_balance, cp.total_reports
-        FROM users u
-        LEFT JOIN citizen_profiles cp ON u.id = cp.user_id
-        WHERE u.id = %s
-    """, (user_id,))
-    user = cursor.fetchone()
-```
-
-**Insert with RETURNING:**
-```python
-with db_connection.get_cursor(commit=True) as cursor:
-    cursor.execute("""
-        INSERT INTO reports (user_id, zone_id, description, severity, status)
-        VALUES (%s, %s, %s, %s, %s)
-        RETURNING id, created_at
-    """, (user_id, zone_id, description, severity, 'SUBMITTED'))
-    new_report = cursor.fetchone()
-    report_id = new_report['id']
-```
-
-**Call stored procedure:**
-```python
-with db_connection.get_cursor() as cursor:
-    cursor.execute("SELECT * FROM calculate_citizen_leaderboard() LIMIT 10")
-    leaderboard = cursor.fetchall()
-```
-
----
-
-## 🔧 Adding New Features
-
-### Add New API Endpoint
-
-**Example: Get citizen's reports**
-
-Edit `citizen.py`:
-```python
-@citizen_bp.route('/api/citizen/reports', methods=['GET'])
-@token_required
-def get_my_reports(current_user):
-    """Get all reports by current citizen"""
-    try:
-        with db_connection.get_cursor() as cursor:
-            cursor.execute("""
-                SELECT r.*, z.name as zone_name
-                FROM reports r
-                JOIN zones z ON r.zone_id = z.id
-                WHERE r.user_id = %s
-                ORDER BY r.created_at DESC
-            """, (current_user['id'],))
-            reports = cursor.fetchall()
-        
-        return jsonify({
-            'reports': reports,
-            'count': len(reports)
-        }), 200
-    
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-```
-
-Test:
-```bash
-curl http://localhost:5000/api/citizen/reports -H "Authorization: Bearer TOKEN"
-```
-
-### Add New Table
-
-Edit `models.py` inside `_create_tables(migration)`:
-```sql
-CREATE TABLE IF NOT EXISTS new_table (
-    id VARCHAR(36) PRIMARY KEY DEFAULT gen_random_uuid()::text,
-    user_id VARCHAR(36) NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    data TEXT,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE INDEX idx_new_table_user ON new_table(user_id);
-```
-
-Recreate database (see workflow above).
-
-Update `mock.py` to generate test data.
-
-### Add New Trigger
-
-Edit `models.py` inside `_create_triggers(migration)`:
-```sql
-CREATE OR REPLACE FUNCTION my_trigger_function()
-RETURNS TRIGGER AS $$
-BEGIN
-    -- Your logic
-    RETURN NEW;
-END;
-$$ LANGUAGE plpgsql;
-
-CREATE TRIGGER my_trigger
-AFTER INSERT ON my_table
-FOR EACH ROW EXECUTE FUNCTION my_trigger_function();
-```
-
-Recreate database and test.
-
-### Add New Stored Procedure
-
-Edit `models.py` inside `_create_procedures(migration)`:
-```sql
-CREATE OR REPLACE FUNCTION my_procedure(p_user_id VARCHAR)
-RETURNS TABLE(result_column VARCHAR) AS $$
-BEGIN
-    RETURN QUERY
-    SELECT column FROM table WHERE user_id = p_user_id;
-END;
-$$ LANGUAGE plpgsql;
-```
-
-Call from Python:
-```python
-with db_connection.get_cursor() as cursor:
-    cursor.execute("SELECT * FROM my_procedure(%s)", (user_id,))
-    results = cursor.fetchall()
-```
-
----
-
-## 🧪 Testing & Debugging
-
-### Test API with curl
-
-```bash
-# Login
-curl -X POST http://localhost:5000/api/auth/login \
-  -H "Content-Type: application/json" \
-  -d '{"email":"citizen1@test.com","password":"password123"}'
-
-# Get profile (use token from login)
-curl http://localhost:5000/api/citizen/profile \
-  -H "Authorization: Bearer YOUR_TOKEN"
-```
-
-### Debug Database
-
-```bash
-# Check tables
-psql -U zero_user -d zero_db -c "\dt"
-
-# Check table structure
-psql -U zero_user -d zero_db -c "\d users"
-
-# Check data
-psql -U zero_user -d zero_db -c "SELECT COUNT(*) FROM users;"
-
-# Quick health check
+### Verify Installation
+`ash
 curl http://localhost:5000/api/health
-```
-
-### Common Issues
-
-**"relation does not exist"**
-→ Run `python app.py` with `RERUN_MIGRATIONS=true`
-
-**"column does not exist"**
-→ Check column name in schema
-
-**"duplicate key violates unique constraint"**
-→ Triggers might auto-create data (e.g., profiles)
-
-**"null value violates not-null constraint"**
-→ Check required fields, triggers need certain data
-
-**"Token is invalid"**
-→ Login again for new token
-
-**"Permission denied"**
-→ Check user has correct role
-
-### Complete Reset
-
-```bash
-# Drop database
-psql -U postgres -c "DROP DATABASE zero_db;"
-
-# Recreate
-psql -U postgres -c "CREATE DATABASE zero_db OWNER zero_user;"
-
-# Grant permissions
-psql -U postgres -d zero_db -c "GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO zero_user;"
-psql -U postgres -d zero_db -c "GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO zero_user;"
-
-# Run migrations
-python app.py
-
-# Load data
-python mock.py
-```
+`
 
 ---
 
-## 📚 Useful Commands
+## Deployment
 
-### PostgreSQL
-
-```bash
-# Connect
-psql -U zero_user -d zero_db
-
-# List tables
-\dt
-
-# Describe table
-\d table_name
-
-# List functions
-\df
-
-# List triggers
-SELECT * FROM pg_trigger;
-
-# Exit
-\q
-```
-
-### Python Virtual Environment
-
-```bash
-# Create
-python -m venv .venv
-
-# Activate (Windows)
-.venv\Scripts\activate
-
-# Activate (Linux/Mac)
-source .venv/bin/activate
-
-# Install
-pip install -r requirements.txt
-
-# Deactivate
-deactivate
-```
+- Update DB_* for production database
+- Set strong SECRET_KEY (use secrets.token_urlsafe(32))
+- Update CORS origins to production frontend URL
+- Enable HTTPS (Flask behind reverse proxy)
+- Monitor /api/health with uptime service
+- Automated PostgreSQL backups
 
 ---
 
-## 🎯 Best Practices
-
-1. ✅ Always use context managers for database
-2. ✅ Never commit `.env` to git
-3. ✅ Test with mock data first
-4. ✅ Use stored procedures for complex queries
-5. ✅ Let triggers handle business logic
-6. ✅ Add indexes for frequent queries
-7. ✅ Use ENUM types for categories
-8. ✅ Document your code
-9. ✅ Test endpoints after changes
-10. ✅ Keep `models.py` as source of truth
-
----
-
-## 🐛 Getting Help
-
-1. Check this README
-2. Check error logs in terminal
-3. Verify database with `psql` checks and `GET /api/health`
-4. Check test data with `mock.py`
-5. Review documentation files
-6. Ask team members
-
----
-
-**Project Status:** Production Ready  
-**Last Updated:** January 2026
-
-**Happy coding!** 🚀
+Production-ready, database-first design ❤️
