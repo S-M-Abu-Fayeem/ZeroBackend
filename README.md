@@ -131,6 +131,7 @@ All user roles, transactions, and workflows are implemented as **normalized rela
 16. idx_special_equipment_analysis ON special_equipment(waste_analysis_id) — Equipment lookups
 
 **Uniqueness & Correctness:**
+
 17. idx_users_email_unique ON users(email) UNIQUE — Login lookups, prevent duplicates
 18. idx_earnings_task_unique ON earnings_transactions(task_id) UNIQUE — One payment per task
 19. idx_user_badges_unique ON user_badges(user_id, badge_id) UNIQUE — Badge earned once per user
@@ -176,7 +177,7 @@ All user roles, transactions, and workflows are implemented as **normalized rela
 1. update_citizen_streak(user_id UUID) — Recalculates 7-day and 30-day action streaks from green_points_transactions timestamps.
 2. check_eco_warrior_badge(user_id UUID) — Award ECOWARRIOR badge if approved_reports ≥ 10.
 3. ward_badge_if_not_exists(user_id UUID, badge_type VARCHAR) — Idempotent badge grant (insert ignored if exists).
-4. ecalculate_zone_cleanliness(zone_id UUID) — Recalculates zone.cleanliness_score from recent 30-day approved reports in zone.
+4. ecalculate_zone_cleanliness(zone_id UUID) — Recalculates zone.cleanliness_score from recent 30-day approved reports in zone.
 5. sp_register_user(email, password_hash, name, phone, role) RETURNS UUID — Atomically creates users row + profile row.
 6. sp_submit_report(user_id, zone_id, description, severity, image_url, latitude, longitude, ai_analysis JSONB) RETURNS UUID — Wraps report insert + waste_analyses.
 7. sp_approve_report(report_id, green_points_reward, create_task BOOL) — Sets status=APPROVED, awards points, optionally creates task.
@@ -282,22 +283,22 @@ All user roles, transactions, and workflows are implemented as **normalized rela
 ## Running the Backend
 
 ### Prerequisites
-`
+```
 Python 3.10+
 PostgreSQL 12+
 pip (Python package manager)
-`
+```
 
 ### Environment Setup
-`ash
+```ash
 cd ZeroBackend
 python -m venv .venv
 source .venv/bin/activate  # On Windows: .venv\Scripts\activate
 pip install -r requirements.txt
-`
+```
 
 ### Configuration (.env)
-`env
+```env
 DB_HOST=localhost
 DB_PORT=5432
 DB_NAME=zero_db
@@ -313,17 +314,17 @@ DB_MAX_CONN=10
 RERUN_MIGRATIONS=false
 HUGGINGFACE_API_KEY=optional_for_ai
 GROQ_API_KEY=optional_for_ai
-`
+```
 
 ### Database Initialization
-`ash
+```ash
 python app.py
-`
+```
 
 ### Verify Installation
-`ash
+```ash
 curl http://localhost:5000/api/health
-`
+```
 
 ---
 
@@ -337,5 +338,3 @@ curl http://localhost:5000/api/health
 - Automated PostgreSQL backups
 
 ---
-
-Production-ready, database-first design ❤️

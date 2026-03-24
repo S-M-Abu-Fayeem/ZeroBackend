@@ -1,6 +1,7 @@
 from flask import jsonify, request
 
 from auth import token_required, role_required
+from ai_service import ai_service
 from models import db_connection
 
 from cleaner_blueprint import cleaner_bp

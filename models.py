@@ -182,6 +182,7 @@ def setup_database():
     _create_indexes(migration)
     _create_triggers(migration)
     _create_procedures(migration)
+    apply_runtime_schema_patches()
 
     print("✓ Database setup complete - REFINED VERSION with:")
     print("  - 3NF normalization (zero redundancy)")
