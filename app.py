@@ -22,8 +22,17 @@ if not app.config['SECRET_KEY']:
 
 # Configure CORS
 frontend_origins_env = os.getenv('FRONTEND_ORIGINS', '').strip()
+
+def _normalize_origin(origin: str) -> str:
+    """Normalize origin format for strict CORS matching."""
+    return origin.strip().rstrip('/')
+
 if frontend_origins_env:
-    allowed_origins = [origin.strip() for origin in frontend_origins_env.split(',') if origin.strip()]
+    allowed_origins = [
+        normalized
+        for normalized in (_normalize_origin(origin) for origin in frontend_origins_env.split(','))
+        if normalized
+    ]
 else:
     allowed_origins = ["http://localhost:3000", "http://127.0.0.1:3000"]
 
