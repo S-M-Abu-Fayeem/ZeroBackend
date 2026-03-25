@@ -1,0 +1,78 @@
+databases:
+  - name: zero-postgres
+    plan: starter
+    databaseName: zero_waste_db
+    user: zero_user
+
+services:
+  - type: web
+    name: zero-backend
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: sh start.sh
+    autoDeploy: true
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.6
+      - key: SECRET_KEY
+        generateValue: true
+      - key: DB_HOST
+        fromDatabase:
+          name: zero-postgres
+          property: host
+      - key: DB_PORT
+        fromDatabase:
+          name: zero-postgres
+          property: port
+      - key: DB_NAME
+        fromDatabase:
+          name: zero-postgres
+          property: database
+      - key: DB_USER
+        fromDatabase:
+          name: zero-postgres
+          property: user
+      - key: DB_PASSWORD
+        fromDatabase:
+          name: zero-postgres
+          property: password
+      - key: DB_MIN_CONN
+        value: 2
+      - key: DB_MAX_CONN
+        value: 10
+      - key: AUTO_SETUP_DATABASE_ON_START
+        value: true
+      - key: DB_BOOTSTRAP_RETRIES
+        value: 10
+      - key: DB_BOOTSTRAP_RETRY_DELAY
+        value: 3
+      - key: FRONTEND_ORIGINS
+        value: https://zero-670.vercel.app,http://localhost:3000,http://127.0.0.1:3000
+      - key: ALLOW_VERCEL_ORIGINS
+        value: true
+      - key: AI_HTTP_TIMEOUT
+        value: 20
+      - key: AI_FREE_ONLY_MODE
+        value: true
+      - key: ALLOW_GROQ_FALLBACK
+        value: true
+      - key: GUNICORN_WORKERS
+        value: 2
+      - key: GUNICORN_THREADS
+        value: 4
+      - key: GUNICORN_TIMEOUT
+        value: 120
+      - key: SUPERADMIN_EMAIL
+        value: superadmin@zero.local
+      - key: SUPERADMIN_NAME
+        value: Super Admin
+      - key: SUPERADMIN_RESET_PASSWORD
+        value: false
+      - key: SUPERADMIN_PASSWORD
+        sync: false
+      - key: HUGGINGFACE_API_KEY
+        sync: false
+      - key: HF_TOKEN
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
