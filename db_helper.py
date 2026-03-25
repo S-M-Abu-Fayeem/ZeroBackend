@@ -13,6 +13,7 @@ except ImportError:
 
 from contextlib import contextmanager
 from typing import List, Dict, Any, Optional, Tuple
+import os
 
 class DatabaseConfig:
     """Holds connection configuration details for establishing PostgreSQL connections."""
@@ -44,9 +45,28 @@ class DatabaseConnection:
     def create_pool(self):
         """Create a connection pool with configured bounds; returns True on success."""
         try:
+            ssl_mode = os.getenv('DB_SSLMODE', 'require')
+            connect_timeout = int(os.getenv('DB_CONNECT_TIMEOUT', '10'))
+            keepalives = int(os.getenv('DB_KEEPALIVES', '1'))
+            keepalives_idle = int(os.getenv('DB_KEEPALIVES_IDLE', '30'))
+            keepalives_interval = int(os.getenv('DB_KEEPALIVES_INTERVAL', '10'))
+            keepalives_count = int(os.getenv('DB_KEEPALIVES_COUNT', '5'))
+
             if PSYCOPG_VERSION == 3:
                 # psycopg3 connection string
-                conninfo = f"host={self.config.host} port={self.config.port} dbname={self.config.database} user={self.config.user} password={self.config.password}"
+                conninfo = (
+                    f"host={self.config.host} "
+                    f"port={self.config.port} "
+                    f"dbname={self.config.database} "
+                    f"user={self.config.user} "
+                    f"password={self.config.password} "
+                    f"sslmode={ssl_mode} "
+                    f"connect_timeout={connect_timeout} "
+                    f"keepalives={keepalives} "
+                    f"keepalives_idle={keepalives_idle} "
+                    f"keepalives_interval={keepalives_interval} "
+                    f"keepalives_count={keepalives_count}"
+                )
                 self.connection_pool = ConnectionPool(
                     conninfo=conninfo,
                     min_size=self.min_conn,
@@ -61,7 +81,13 @@ class DatabaseConnection:
                     port=self.config.port,
                     database=self.config.database,
                     user=self.config.user,
-                    password=self.config.password
+                    password=self.config.password,
+                    sslmode=ssl_mode,
+                    connect_timeout=connect_timeout,
+                    keepalives=keepalives,
+                    keepalives_idle=keepalives_idle,
+                    keepalives_interval=keepalives_interval,
+                    keepalives_count=keepalives_count,
                 )
             print(f"Connection pool created successfully (psycopg{PSYCOPG_VERSION})")
             return True
@@ -81,24 +107,40 @@ class DatabaseConnection:
                         if commit:
                             connection.commit()
                     except Exception as e:
-                        connection.rollback()
+                        try:
+                            if not connection.closed:
+                                connection.rollback()
+                        except Exception as rollback_error:
+                            print(f"Rollback skipped due to lost connection: {rollback_error}")
                         print(f"Error during database operation: {e}")
-                        raise e
+                        raise
         else:
             # psycopg2 manual connection management
             connection = self.connection_pool.getconn()
             cursor = connection.cursor(cursor_factory=RealDictCursor)
+            should_close_connection = False
             try:
                 yield cursor
                 if commit:
                     connection.commit()
             except Exception as e:
-                connection.rollback()
+                should_close_connection = True
+                try:
+                    if not connection.closed:
+                        connection.rollback()
+                except Exception as rollback_error:
+                    print(f"Rollback skipped due to lost connection: {rollback_error}")
                 print(f"Error during database operation: {e}")
-                raise e
+                raise
             finally:
-                cursor.close()
-                self.connection_pool.putconn(connection)
+                try:
+                    cursor.close()
+                except Exception:
+                    pass
+                try:
+                    self.connection_pool.putconn(connection, close=should_close_connection or bool(connection.closed))
+                except Exception:
+                    pass
     
     def close_pool(self):
         """Close all connections in the pool if it has been initialized."""
