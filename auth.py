@@ -5,9 +5,50 @@ from flask import request, jsonify
 from functools import wraps
 import jwt
 import os
+import time
+from threading import Lock
 from dotenv import load_dotenv
 
 load_dotenv()
+
+_auth_user_cache = {}
+_auth_user_cache_lock = Lock()
+
+
+def _cache_ttl_seconds() -> int:
+    """Return cache TTL for auth user snapshots."""
+    try:
+        return max(0, int(os.getenv('AUTH_USER_CACHE_TTL', '30')))
+    except Exception:
+        return 30
+
+
+def _get_cached_user(user_id: str):
+    """Get cached user snapshot if still valid."""
+    ttl = _cache_ttl_seconds()
+    if ttl <= 0:
+        return None
+
+    now = time.time()
+    with _auth_user_cache_lock:
+        item = _auth_user_cache.get(user_id)
+        if not item:
+            return None
+        expires_at, user = item
+        if now > expires_at:
+            _auth_user_cache.pop(user_id, None)
+            return None
+        return user
+
+
+def _set_cached_user(user_id: str, user):
+    """Store authenticated user snapshot briefly to cut DB reads under burst traffic."""
+    ttl = _cache_ttl_seconds()
+    if ttl <= 0:
+        return
+
+    with _auth_user_cache_lock:
+        _auth_user_cache[user_id] = (time.time() + ttl, user)
 
 
 def _get_secret_key() -> str:
@@ -44,7 +85,15 @@ def token_required(f):
             # Decode token
             secret_key = _get_secret_key()
             data = jwt.decode(token, secret_key, algorithms=["HS256"])
-            current_user = users_model.find_by_id(data['user_id'])
+            user_id = data.get('user_id')
+            if not user_id:
+                return jsonify({'success': False, 'error': 'Invalid token payload'}), 401
+
+            current_user = _get_cached_user(user_id)
+            if not current_user:
+                current_user = users_model.find_by_id(user_id)
+                if current_user:
+                    _set_cached_user(user_id, current_user)
             
             if not current_user:
                 return jsonify({'success': False, 'error': 'User not found'}), 401

@@ -39,7 +39,7 @@ services:
       - key: DB_MIN_CONN
         value: 2
       - key: DB_MAX_CONN
-        value: 4
+        value: 8
       - key: DB_SSLMODE
         value: require
       - key: DB_CONNECT_TIMEOUT
@@ -53,15 +53,17 @@ services:
       - key: DB_KEEPALIVES_COUNT
         value: 5
       - key: DB_POOL_TIMEOUT
-        value: 10
+        value: 20
       - key: DB_POOL_MAX_LIFETIME
         value: 300
       - key: DB_POOL_MAX_IDLE
         value: 60
       - key: DB_QUERY_RETRIES
-        value: 1
+        value: 2
       - key: DB_QUERY_RETRY_DELAY
-        value: 0.2
+        value: 0.3
+      - key: AUTH_USER_CACHE_TTL
+        value: 30
       - key: AUTO_SETUP_DATABASE_ON_START
         value: true
       - key: DB_BOOTSTRAP_RETRIES
