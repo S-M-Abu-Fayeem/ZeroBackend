@@ -36,11 +36,29 @@ if frontend_origins_env:
 else:
     allowed_origins = ["http://localhost:3000", "http://127.0.0.1:3000"]
 
+allowed_origins_set = set(allowed_origins)
+
 CORS(app, 
      resources={r"/api/*": {"origins": allowed_origins}},
      methods=['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
      allow_headers=['Content-Type', 'Authorization'],
      supports_credentials=True)
+
+
+@app.after_request
+def add_cors_headers(response):
+    """Fallback CORS headers for API routes to avoid preflight mismatches in production proxies."""
+    origin = request.headers.get('Origin', '').strip()
+    normalized_origin = _normalize_origin(origin) if origin else ''
+
+    if request.path.startswith('/api/') and normalized_origin in allowed_origins_set:
+        response.headers['Access-Control-Allow-Origin'] = normalized_origin
+        response.headers['Vary'] = 'Origin'
+        response.headers['Access-Control-Allow-Credentials'] = 'true'
+        response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization'
+        response.headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, DELETE, OPTIONS'
+
+    return response
 
 # Initialize database connection pool (schema assumed to be pre-initialized)
 db_connection.create_pool()
