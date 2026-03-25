@@ -8,6 +8,7 @@ import importlib
 import bcrypt
 import jwt
 import json
+from urllib.parse import urlsplit
 from auth import token_required, role_required, superadmin_required
 from superadmin_routes import ensure_default_superadmin
 
@@ -25,7 +26,34 @@ frontend_origins_env = os.getenv('FRONTEND_ORIGINS', '').strip()
 
 def _normalize_origin(origin: str) -> str:
     """Normalize origin format for strict CORS matching."""
-    return origin.strip().rstrip('/')
+    candidate = origin.strip().strip('"').strip("'").rstrip('/')
+    if not candidate:
+        return ''
+
+    try:
+        parsed = urlsplit(candidate)
+        if not parsed.scheme or not parsed.netloc:
+            return candidate
+        # Normalize scheme/host casing and keep explicit port if present.
+        return f"{parsed.scheme.lower()}://{parsed.netloc.lower()}"
+    except Exception:
+        return candidate
+
+
+def _is_allowed_origin(origin: str) -> bool:
+    """Check whether an origin should receive CORS headers."""
+    normalized = _normalize_origin(origin)
+    if not normalized:
+        return False
+    if normalized in allowed_origins_set:
+        return True
+
+    # Allow Vercel-hosted frontends by default unless explicitly disabled.
+    allow_vercel = os.getenv('ALLOW_VERCEL_ORIGINS', 'true').lower() == 'true'
+    if allow_vercel and normalized.startswith('https://') and normalized.endswith('.vercel.app'):
+        return True
+
+    return False
 
 if frontend_origins_env:
     allowed_origins = [
@@ -45,13 +73,20 @@ CORS(app,
      supports_credentials=True)
 
 
+@app.before_request
+def handle_api_preflight():
+    """Ensure API preflight requests always receive a concrete response."""
+    if request.method == 'OPTIONS' and request.path.startswith('/api/'):
+        return app.make_default_options_response()
+
+
 @app.after_request
 def add_cors_headers(response):
     """Fallback CORS headers for API routes to avoid preflight mismatches in production proxies."""
     origin = request.headers.get('Origin', '').strip()
     normalized_origin = _normalize_origin(origin) if origin else ''
 
-    if request.path.startswith('/api/') and normalized_origin in allowed_origins_set:
+    if request.path.startswith('/api/') and _is_allowed_origin(normalized_origin):
         response.headers['Access-Control-Allow-Origin'] = normalized_origin
         response.headers['Vary'] = 'Origin'
         response.headers['Access-Control-Allow-Credentials'] = 'true'
