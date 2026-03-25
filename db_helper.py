@@ -14,6 +14,28 @@ except ImportError:
 from contextlib import contextmanager
 from typing import List, Dict, Any, Optional, Tuple
 import os
+import time
+
+if PSYCOPG_VERSION == 3:
+    DB_OPERATIONAL_ERRORS = (psycopg.OperationalError, psycopg.InterfaceError)
+else:
+    DB_OPERATIONAL_ERRORS = (psycopg2.OperationalError, psycopg2.InterfaceError)
+
+
+def _is_transient_db_error(error: Exception) -> bool:
+    """Identify connection-level failures that are safe to retry for read operations."""
+    text = str(error).lower()
+    transient_markers = [
+        'connection is lost',
+        'server closed the connection unexpectedly',
+        'bad record mac',
+        'consuming input failed',
+        'ssl error',
+        'terminating connection',
+        'connection not open',
+        'could not receive data from server',
+    ]
+    return any(marker in text for marker in transient_markers)
 
 class DatabaseConfig:
     """Holds connection configuration details for establishing PostgreSQL connections."""
@@ -224,24 +246,48 @@ class Model:
         self.table_name = table_name
         self.query_builder = QueryBuilder()
 
+    def _run_with_retry(self, operation):
+        """Retry transient connection failures for read-only operations."""
+        retries = max(0, int(os.getenv('DB_QUERY_RETRIES', '1')))
+        delay_seconds = max(0.0, float(os.getenv('DB_QUERY_RETRY_DELAY', '0.2')))
+
+        attempt = 0
+        while True:
+            try:
+                return operation()
+            except DB_OPERATIONAL_ERRORS as e:
+                should_retry = attempt < retries and _is_transient_db_error(e)
+                if not should_retry:
+                    raise
+                attempt += 1
+                print(f"Transient DB error detected (attempt {attempt}/{retries}). Retrying read operation...")
+                time.sleep(delay_seconds)
+
     def find_all(self, where=None, order_by=None,limit=None):
         """Fetch multiple rows with optional filters, ordering, and limit."""
         query, params = self.query_builder.select(
             self.table_name, where=where, order_by=order_by, limit=limit
         )
 
-        with self.db.get_cursor() as cursor:
-            cursor.execute(query, params)
-            return cursor.fetchall()
+        def _op():
+            with self.db.get_cursor() as cursor:
+                cursor.execute(query, params)
+                return cursor.fetchall()
+
+        return self._run_with_retry(_op)
     
     def find_by_id(self, id_value, id_column="id"):
         """Fetch a single row by primary key or specified identifier column."""
         query, params = self.query_builder.select(
             self.table_name, where={id_column: id_value}
         )
-        with self.db.get_cursor() as cursor:
-            cursor.execute(query, params)
-            return cursor.fetchone()
+
+        def _op():
+            with self.db.get_cursor() as cursor:
+                cursor.execute(query, params)
+                return cursor.fetchone()
+
+        return self._run_with_retry(_op)
     
     def create(self, data):
         """Insert a new record and return the inserted row."""
@@ -266,12 +312,18 @@ class Model:
 
     def execute_raw(self, query, params=None, commit=False):
         """Execute arbitrary SQL with optional parameters; returns fetched rows when available."""
-        with self.db.get_cursor(commit=True) as cursor:
-            cursor.execute(query, params or [])
-            try:
-                return cursor.fetchall()
-            except:
-                return []
+        def _op():
+            with self.db.get_cursor(commit=commit) as cursor:
+                cursor.execute(query, params or [])
+                try:
+                    return cursor.fetchall()
+                except Exception:
+                    return []
+
+        # Retry only non-committing raw operations to avoid duplicate writes.
+        if commit:
+            return _op()
+        return self._run_with_retry(_op)
 
 class Migration:
     """Provides generic helpers to execute schema migrations (DDL/DML operations)."""

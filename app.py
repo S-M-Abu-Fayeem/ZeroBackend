@@ -394,7 +394,8 @@ def login():
         # Update last login
         users_model.execute_raw(
             "UPDATE users SET last_login_at = CURRENT_TIMESTAMP WHERE id = %s",
-            [user['id']]
+            [user['id']],
+            commit=True
         )
         
         # Generate JWT token

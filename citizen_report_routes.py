@@ -5,6 +5,17 @@ from models import db_connection
 
 from citizen_blueprint import citizen_bp
 
+
+def _to_int_percentage(value, default=0):
+    """Convert AI percentage values like '35' or '35%' into bounded ints."""
+    try:
+        if isinstance(value, str):
+            value = value.strip().rstrip('%')
+        parsed = int(float(value))
+        return max(0, min(100, parsed))
+    except Exception:
+        return default
+
 @citizen_bp.route('/reports', methods=['POST'])
 @token_required
 @role_required('CITIZEN')
@@ -20,8 +31,14 @@ def submit_report():
         # Validate required fields
         required_fields = ['zone_id', 'description', 'severity', 'latitude', 'longitude']
         for field in required_fields:
-            if not data.get(field):
+            if field not in data or data.get(field) is None or (isinstance(data.get(field), str) and not data.get(field).strip()):
                 return jsonify({'success': False, 'error': f'{field} is required'}), 400
+
+        try:
+            latitude = float(data['latitude'])
+            longitude = float(data['longitude'])
+        except Exception:
+            return jsonify({'success': False, 'error': 'latitude and longitude must be numeric'}), 400
         
         # Validate severity
         valid_severities = ['LOW', 'MEDIUM', 'HIGH', 'CRITICAL']
@@ -37,7 +54,7 @@ def submit_report():
             """, (
                 user_id, data['zone_id'], data['description'], 
                 data.get('image_url'), data['severity'], 
-                data['latitude'], data['longitude']
+                latitude, longitude
             ))
             new_report = cursor.fetchone()
 
@@ -83,6 +100,8 @@ def submit_report():
                 waste_analysis = cursor.fetchone()
 
                 for waste in ai_analysis.get('waste_composition', []) or []:
+                    if not isinstance(waste, dict):
+                        continue
                     cursor.execute("""
                         INSERT INTO waste_compositions
                         (waste_analysis_id, waste_type, percentage, recyclable)
@@ -90,7 +109,7 @@ def submit_report():
                     """, (
                         waste_analysis['id'],
                         waste.get('waste_type', 'Unknown'),
-                        int(waste.get('percentage', 0) or 0),
+                        _to_int_percentage(waste.get('percentage', 0), 0),
                         bool(waste.get('recyclable', False)),
                     ))
 

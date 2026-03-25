@@ -56,6 +56,10 @@ def token_required(f):
             return jsonify({'success': False, 'error': 'Token has expired'}), 401
         except jwt.InvalidTokenError:
             return jsonify({'success': False, 'error': 'Invalid token'}), 401
+        except Exception as e:
+            # Protect API routes from raw DB/connection failures during auth lookup.
+            print(f"Token validation failed due to backend error: {e}")
+            return jsonify({'success': False, 'error': 'Authentication service temporarily unavailable'}), 503
         
         return f(*args, **kwargs)
     
