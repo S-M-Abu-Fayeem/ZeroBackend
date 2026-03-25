@@ -9,4 +9,10 @@ if [ -z "${PORT}" ]; then
 fi
 
 echo "Starting gunicorn on PORT=${PORT}"
-exec gunicorn --bind 0.0.0.0:${PORT} app:app
+exec gunicorn \
+	--bind 0.0.0.0:${PORT} \
+	--workers ${GUNICORN_WORKERS:-2} \
+	--worker-class gthread \
+	--threads ${GUNICORN_THREADS:-4} \
+	--timeout ${GUNICORN_TIMEOUT:-120} \
+	app:app

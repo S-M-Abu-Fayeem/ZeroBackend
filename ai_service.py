@@ -28,9 +28,10 @@ class AIService(AIServiceIOMixin, AIServiceAnalysisMixin, AIServiceValidationMix
 
         use_vision_env = os.getenv("USE_FREE_VISION", "true").lower()
         self.use_free_vision = use_vision_env == "true"
-        self.hf_token = os.getenv("HUGGINGFACE_API_KEY")
+        self.hf_token = (os.getenv("HUGGINGFACE_API_KEY") or os.getenv("HF_TOKEN") or "").strip()
         self.hf_router_url = os.getenv("HF_ROUTER_URL", "https://router.huggingface.co/v1/chat/completions")
         self.hf_vision_model = os.getenv("HF_VISION_MODEL", "zai-org/GLM-4.5V:cheapest")
+        self.ai_http_timeout = int(os.getenv("AI_HTTP_TIMEOUT", "20"))
 
         self.max_image_bytes = int(os.getenv("MAX_IMAGE_BYTES", str(8 * 1024 * 1024)))
 
@@ -51,6 +52,7 @@ class AIService(AIServiceIOMixin, AIServiceAnalysisMixin, AIServiceValidationMix
         print(f"   Groq key present: {bool(self.groq_client)}")
         print(f"   USE_FREE_VISION: {self.use_free_vision}")
         print(f"   HF token present: {bool(self.hf_token and self.hf_token != 'your_hf_token_here')}")
+        print(f"   AI HTTP timeout (s): {self.ai_http_timeout}")
         print(f"   MAX_IMAGE_BYTES: {self.max_image_bytes}")
 
 # Global AI service instance
