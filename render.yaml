@@ -39,7 +39,7 @@ services:
       - key: DB_MIN_CONN
         value: 2
       - key: DB_MAX_CONN
-        value: 10
+        value: 4
       - key: DB_SSLMODE
         value: require
       - key: DB_CONNECT_TIMEOUT
@@ -52,6 +52,12 @@ services:
         value: 10
       - key: DB_KEEPALIVES_COUNT
         value: 5
+      - key: DB_POOL_TIMEOUT
+        value: 10
+      - key: DB_POOL_MAX_LIFETIME
+        value: 300
+      - key: DB_POOL_MAX_IDLE
+        value: 60
       - key: DB_QUERY_RETRIES
         value: 1
       - key: DB_QUERY_RETRY_DELAY
@@ -73,9 +79,9 @@ services:
       - key: ALLOW_GROQ_FALLBACK
         value: true
       - key: GUNICORN_WORKERS
-        value: 2
+        value: 1
       - key: GUNICORN_THREADS
-        value: 4
+        value: 8
       - key: GUNICORN_TIMEOUT
         value: 120
       - key: SUPERADMIN_EMAIL

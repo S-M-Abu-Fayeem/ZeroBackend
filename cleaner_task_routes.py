@@ -228,12 +228,17 @@ def complete_task(task_id):
         
         data = request.get_json()
         user_id = request.current_user['id']
+        comparison_result = None
+        report_id = None
+        reward = 0
+        completed_at = None
         
         # Validate required fields
         if not data.get('evidence_image_url'):
             return jsonify({'success': False, 'error': 'evidence_image_url is required'}), 400
-        
-        with db_connection.get_cursor(commit=True) as cursor:
+
+        # Phase 1: read task data quickly without opening a long transaction.
+        with db_connection.get_cursor() as cursor:
             # Verify task belongs to cleaner and is in progress
             cursor.execute("""
                 SELECT t.report_id, t.reward, r.image_url as before_image_url
@@ -245,6 +250,22 @@ def complete_task(task_id):
             
             if not task:
                 return jsonify({'success': False, 'error': 'Task not found or not in progress'}), 404
+
+        report_id = task.get('report_id')
+        reward = float(task.get('reward') or 0)
+
+        before_image_url = task.get('before_image_url')
+        after_image_url = data.get('after_image_url', data['evidence_image_url'])
+
+        # Phase 2: AI call outside any DB cursor to avoid pool starvation.
+        if before_image_url and after_image_url:
+            try:
+                comparison_result = ai_service.compare_cleanup_images(before_image_url, after_image_url, report_id)
+            except Exception as compare_error:
+                print(f"⚠️ Cleanup comparison generation failed: {compare_error}")
+
+        # Phase 3: write updates in a short transaction.
+        with db_connection.get_cursor(commit=True) as cursor:
             
             # Complete the task
             cursor.execute("""
@@ -256,9 +277,10 @@ def complete_task(task_id):
                 RETURNING completed_at
             """, (data['evidence_image_url'], task_id))
             updated_task = cursor.fetchone()
+            completed_at = updated_task['completed_at']
             
             # Update report if exists
-            if task['report_id']:
+            if report_id:
                 cursor.execute("""
                     UPDATE reports 
                     SET status = 'COMPLETED',
@@ -267,18 +289,7 @@ def complete_task(task_id):
                         cleaner_id = %s
                     WHERE id = %s
                 """, (data.get('after_image_url', data['evidence_image_url']), 
-                      user_id, task['report_id']))
-
-                # Generate AI comparison report from before/after images.
-                comparison_result = None
-                before_image_url = task.get('before_image_url')
-                after_image_url = data.get('after_image_url', data['evidence_image_url'])
-
-                if before_image_url and after_image_url:
-                    try:
-                        comparison_result = ai_service.compare_cleanup_images(before_image_url, after_image_url, task['report_id'])
-                    except Exception as compare_error:
-                        print(f"⚠️ Cleanup comparison generation failed: {compare_error}")
+                      user_id, report_id))
 
                 if comparison_result:
                     # Upsert cleanup comparison base row.
@@ -302,7 +313,7 @@ def complete_task(task_id):
                             updated_by = EXCLUDED.created_by
                         RETURNING id
                     """, (
-                        task['report_id'],
+                        report_id,
                         comparison_result.get('completionPercentage', 0),
                         comparison_result.get('beforeSummary', ''),
                         comparison_result.get('afterSummary', ''),
@@ -357,8 +368,8 @@ def complete_task(task_id):
             'data': {
                 'id': task_id,
                 'status': 'COMPLETED',
-                'completed_at': updated_task['completed_at'].isoformat(),
-                'earnings': float(task['reward'])
+                'completed_at': completed_at.isoformat() if completed_at else None,
+                'earnings': reward
             }
         }), 200
     

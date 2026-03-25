@@ -11,8 +11,8 @@ fi
 echo "Starting gunicorn on PORT=${PORT}"
 exec gunicorn \
 	--bind 0.0.0.0:${PORT} \
-	--workers ${GUNICORN_WORKERS:-2} \
+	--workers ${GUNICORN_WORKERS:-1} \
 	--worker-class gthread \
-	--threads ${GUNICORN_THREADS:-4} \
+	--threads ${GUNICORN_THREADS:-8} \
 	--timeout ${GUNICORN_TIMEOUT:-120} \
 	app:app

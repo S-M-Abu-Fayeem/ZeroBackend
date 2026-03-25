@@ -73,6 +73,9 @@ class DatabaseConnection:
             keepalives_idle = int(os.getenv('DB_KEEPALIVES_IDLE', '30'))
             keepalives_interval = int(os.getenv('DB_KEEPALIVES_INTERVAL', '10'))
             keepalives_count = int(os.getenv('DB_KEEPALIVES_COUNT', '5'))
+            pool_timeout = int(os.getenv('DB_POOL_TIMEOUT', '10'))
+            pool_max_lifetime = int(os.getenv('DB_POOL_MAX_LIFETIME', '300'))
+            pool_max_idle = int(os.getenv('DB_POOL_MAX_IDLE', '60'))
 
             if PSYCOPG_VERSION == 3:
                 # psycopg3 connection string
@@ -92,7 +95,10 @@ class DatabaseConnection:
                 self.connection_pool = ConnectionPool(
                     conninfo=conninfo,
                     min_size=self.min_conn,
-                    max_size=self.max_conn
+                    max_size=self.max_conn,
+                    timeout=pool_timeout,
+                    max_lifetime=pool_max_lifetime,
+                    max_idle=pool_max_idle,
                 )
             else:
                 # psycopg2 connection pool
