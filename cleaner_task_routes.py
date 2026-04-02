@@ -31,7 +31,7 @@ def get_available_tasks():
             params.append(priority)
         
         with db_connection.get_cursor() as cursor:
-            # Get available tasks
+            # Get available tasks.
             cursor.execute(f"""
                 SELECT 
                     t.id, t.zone_id, t.description, t.priority, t.due_date, t.reward, t.created_at,
@@ -55,8 +55,7 @@ def get_available_tasks():
                 LIMIT %s OFFSET %s
             """, params + [limit, offset])
             tasks = cursor.fetchall()
-            
-            # Get total count
+
             cursor.execute(f"""
                 SELECT COUNT(*) as total
                 FROM tasks t
@@ -64,30 +63,46 @@ def get_available_tasks():
             """, params)
             total_result = cursor.fetchone()
             total = total_result['total'] if total_result else 0
-            
-            # Get special equipment for each task
-            for task in tasks:
-                if task['report_id']:
-                    cursor.execute("""
-                        SELECT waste_type, percentage, recyclable
-                        FROM waste_compositions wc
-                        JOIN waste_analyses wa ON wc.waste_analysis_id = wa.id
-                        WHERE wa.report_id = %s
-                    """, (task['report_id'],))
-                    waste_composition = cursor.fetchall()
-                    task['waste_composition'] = waste_composition if waste_composition else []
 
-                    cursor.execute("""
-                        SELECT se.equipment_name
-                        FROM special_equipment se
-                        JOIN waste_analyses wa ON se.waste_analysis_id = wa.id
-                        WHERE wa.report_id = %s
-                    """, (task['report_id'],))
-                    equipment = cursor.fetchall()
-                    task['special_equipment'] = [eq['equipment_name'] for eq in equipment]
-                else:
-                    task['waste_composition'] = []
-                    task['special_equipment'] = []
+            report_ids = [task['report_id'] for task in tasks if task.get('report_id')]
+            waste_by_report = {}
+            equipment_by_report = {}
+
+            if report_ids:
+                cursor.execute("""
+                    SELECT
+                        wa.report_id,
+                        wc.waste_type,
+                        wc.percentage,
+                        wc.recyclable
+                    FROM waste_compositions wc
+                    JOIN waste_analyses wa ON wc.waste_analysis_id = wa.id
+                    WHERE wa.report_id = ANY(%s)
+                    ORDER BY wa.report_id
+                """, (report_ids,))
+                for row in cursor.fetchall():
+                    waste_by_report.setdefault(row['report_id'], []).append({
+                        'waste_type': row['waste_type'],
+                        'percentage': row['percentage'],
+                        'recyclable': row['recyclable'],
+                    })
+
+                cursor.execute("""
+                    SELECT
+                        wa.report_id,
+                        se.equipment_name
+                    FROM special_equipment se
+                    JOIN waste_analyses wa ON se.waste_analysis_id = wa.id
+                    WHERE wa.report_id = ANY(%s)
+                    ORDER BY wa.report_id
+                """, (report_ids,))
+                for row in cursor.fetchall():
+                    equipment_by_report.setdefault(row['report_id'], []).append(row['equipment_name'])
+
+            for task in tasks:
+                report_id = task.get('report_id')
+                task['waste_composition'] = waste_by_report.get(report_id, []) if report_id else []
+                task['special_equipment'] = equipment_by_report.get(report_id, []) if report_id else []
         
         # Convert timestamps to ISO format
         for task in tasks:
@@ -115,24 +130,20 @@ def take_task(task_id):
         user_id = request.current_user['id']
         
         with db_connection.get_cursor(commit=True) as cursor:
-            # Verify task is available
             cursor.execute("""
-                SELECT id FROM tasks 
-                WHERE id = %s AND cleaner_id IS NULL AND status = 'APPROVED'
-            """, (task_id,))
-            task = cursor.fetchone()
-            
-            if not task:
-                return jsonify({'success': False, 'error': 'Task not available or already taken'}), 404
-            
-            # Take the task
-            cursor.execute("""
-                UPDATE tasks 
-                SET cleaner_id = %s, status = 'IN_PROGRESS', taken_at = CURRENT_TIMESTAMP
+                UPDATE tasks
+                SET cleaner_id = %s,
+                    status = 'IN_PROGRESS',
+                    taken_at = CURRENT_TIMESTAMP
                 WHERE id = %s
+                  AND cleaner_id IS NULL
+                  AND status = 'APPROVED'
                 RETURNING taken_at
             """, (user_id, task_id))
             updated_task = cursor.fetchone()
+
+            if not updated_task:
+                return jsonify({'success': False, 'error': 'Task not available or already taken'}), 404
         
         return jsonify({
             'success': True,
