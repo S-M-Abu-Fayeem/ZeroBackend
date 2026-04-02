@@ -125,10 +125,31 @@ class DatabaseConnection:
             print(f"Error creating connection pool: {e}")
             return False
 
+    def _pool_is_usable(self) -> bool:
+        """Return True when a connection pool exists and is not closed."""
+        pool = self.connection_pool
+        if pool is None:
+            return False
+        return not bool(getattr(pool, 'closed', False))
+
+    def _ensure_pool(self) -> None:
+        """Create or recreate the pool lazily when it is missing or closed."""
+        if self._pool_is_usable():
+            return
+
+        with self._pool_reset_lock:
+            if self._pool_is_usable():
+                return
+
+            self.connection_pool = None
+            if not self.create_pool():
+                raise RuntimeError('Database connection pool is unavailable')
+
     @contextmanager
     def get_cursor(self, commit=False):
         """Yield a cursor from the pool; commit or rollback based on execution outcome."""
         if PSYCOPG_VERSION == 3:
+            self._ensure_pool()
             # psycopg3 uses connection context manager
             for attempt in range(2):
                 try:
@@ -147,13 +168,21 @@ class DatabaseConnection:
                                 print(f"Error during database operation: {e}")
                                 raise
                     return
-                except PoolTimeout as timeout_error:
-                    # Recover once from a potentially stale/saturated pool, then re-raise.
-                    if attempt == 0 and self._reset_pool_after_timeout(timeout_error):
+                except PoolTimeout:
+                    if attempt == 0:
+                        time.sleep(float(os.getenv('DB_POOL_RETRY_DELAY', '0.15')))
+                        self._ensure_pool()
+                        continue
+                    raise
+                except Exception as exc:
+                    if attempt == 0 and ('closed' in str(exc).lower() or 'none' in str(exc).lower()):
+                        self.connection_pool = None
+                        self._ensure_pool()
                         continue
                     raise
         else:
             # psycopg2 manual connection management
+            self._ensure_pool()
             connection = self.connection_pool.getconn()
             cursor = connection.cursor(cursor_factory=RealDictCursor)
             should_close_connection = False
@@ -179,23 +208,6 @@ class DatabaseConnection:
                     self.connection_pool.putconn(connection, close=should_close_connection or bool(connection.closed))
                 except Exception:
                     pass
-
-    def _reset_pool_after_timeout(self, timeout_error: Exception) -> bool:
-        """Reset pool once after acquisition timeout so future requests can recover."""
-        print(f"Pool acquisition timeout encountered: {timeout_error}")
-        with self._pool_reset_lock:
-            existing_pool = self.connection_pool
-            if existing_pool is None:
-                return self.create_pool()
-
-            try:
-                existing_pool.close()
-            except Exception as close_error:
-                print(f"Pool close during timeout recovery raised: {close_error}")
-
-            self.connection_pool = None
-            print("Attempting pool recreation after timeout...")
-            return self.create_pool()
     
     def close_pool(self):
         """Close all connections in the pool if it has been initialized."""
