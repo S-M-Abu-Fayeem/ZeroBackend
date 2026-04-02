@@ -34,9 +34,9 @@ def get_notifications():
         type_filter = []
         type_params = []
         
-        # Report & Activity Updates: report status, task assignments, point updates
+        # Report & Activity Updates: report status, task assignments, point updates, alerts
         if prefs.get('notify_report_updates', True):
-            type_filter.append("n.type IN ('REPORT', 'TASK', 'POINTS', 'BADGE')")
+            type_filter.append("n.type IN ('REPORT', 'TASK', 'POINTS', 'BADGE', 'ALERT')")
         
         # News & Updates: platform announcements and eco tips
         if prefs.get('notify_news_updates', False):
@@ -165,6 +165,16 @@ def send_bulk_notification():
         
         data = request.get_json()
         admin_id = request.current_user['id']
+
+        raw_type = str(data.get('type', '')).strip().lower()
+        # Map UI style-level types into DB enum notification_type values.
+        # Default to ALERT so bulk broadcasts are visible in normal activity feed.
+        if raw_type in {'announcement', 'news'}:
+            notification_type = 'ANNOUNCEMENT'
+        elif raw_type in {'alert', 'warning', 'info', 'success'}:
+            notification_type = 'ALERT'
+        else:
+            notification_type = 'ALERT'
         
         # Validate required fields
         required_fields = ['audience', 'type', 'title', 'message']
@@ -183,7 +193,7 @@ def send_bulk_notification():
                 INSERT INTO bulk_notifications (audience, type, title, message, sent_by)
                 VALUES (%s, %s, %s, %s, %s)
                 RETURNING id, created_at
-            """, (data['audience'], data['type'], data['title'], data['message'], admin_id))
+            """, (data['audience'], raw_type or 'alert', data['title'], data['message'], admin_id))
             bulk_notification = cursor.fetchone()
             
             # Send to individual users based on audience
@@ -191,23 +201,23 @@ def send_bulk_notification():
             if data['audience'] == 'all':
                 cursor.execute("""
                     INSERT INTO notifications (user_id, type, title, message, created_by)
-                    SELECT id, 'ANNOUNCEMENT', %s, %s, %s
+                    SELECT id, %s::notification_type, %s, %s, %s
                     FROM users WHERE is_active = true
-                """, (data['title'], data['message'], admin_id))
+                """, (notification_type, data['title'], data['message'], admin_id))
                 recipients_count = cursor.rowcount
             elif data['audience'] == 'citizens':
                 cursor.execute("""
                     INSERT INTO notifications (user_id, type, title, message, created_by)
-                    SELECT id, 'ANNOUNCEMENT', %s, %s, %s
+                    SELECT id, %s::notification_type, %s, %s, %s
                     FROM users WHERE role = 'CITIZEN' AND is_active = true
-                """, (data['title'], data['message'], admin_id))
+                """, (notification_type, data['title'], data['message'], admin_id))
                 recipients_count = cursor.rowcount
             elif data['audience'] == 'cleaners':
                 cursor.execute("""
                     INSERT INTO notifications (user_id, type, title, message, created_by)
-                    SELECT id, 'ANNOUNCEMENT', %s, %s, %s
+                    SELECT id, %s::notification_type, %s, %s, %s
                     FROM users WHERE role = 'CLEANER' AND is_active = true
-                """, (data['title'], data['message'], admin_id))
+                """, (notification_type, data['title'], data['message'], admin_id))
                 recipients_count = cursor.rowcount
         
         return jsonify({
@@ -215,6 +225,7 @@ def send_bulk_notification():
             'message': 'Bulk notification sent successfully',
             'data': {
                 'audience': data['audience'],
+                'notification_type': notification_type,
                 'recipients_count': recipients_count,
                 'sent_at': bulk_notification['created_at'].isoformat()
             }

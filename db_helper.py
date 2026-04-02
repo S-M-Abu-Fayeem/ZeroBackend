@@ -2,7 +2,7 @@ try:
     # Try psycopg3 first (for Python 3.12+)
     import psycopg
     from psycopg.rows import dict_row
-    from psycopg_pool import ConnectionPool
+    from psycopg_pool import ConnectionPool, PoolTimeout
     PSYCOPG_VERSION = 3
 except ImportError:
     # Fall back to psycopg2 (for Python < 3.12)
@@ -15,6 +15,7 @@ from contextlib import contextmanager
 from typing import List, Dict, Any, Optional, Tuple
 import os
 import time
+from threading import Lock
 
 if PSYCOPG_VERSION == 3:
     DB_OPERATIONAL_ERRORS = (psycopg.OperationalError, psycopg.InterfaceError)
@@ -63,6 +64,7 @@ class DatabaseConnection:
         self.connection_pool = None
         self.min_conn = min_conn
         self.max_conn = max_conn
+        self._pool_reset_lock = Lock()
 
     def create_pool(self):
         """Create a connection pool with configured bounds; returns True on success."""
@@ -76,6 +78,12 @@ class DatabaseConnection:
             pool_timeout = int(os.getenv('DB_POOL_TIMEOUT', '10'))
             pool_max_lifetime = int(os.getenv('DB_POOL_MAX_LIFETIME', '300'))
             pool_max_idle = int(os.getenv('DB_POOL_MAX_IDLE', '60'))
+            statement_timeout_ms = int(os.getenv('DB_STATEMENT_TIMEOUT_MS', '12000'))
+            idle_tx_timeout_ms = int(os.getenv('DB_IDLE_TX_TIMEOUT_MS', '10000'))
+            conn_options = (
+                f"-c statement_timeout={statement_timeout_ms} "
+                f"-c idle_in_transaction_session_timeout={idle_tx_timeout_ms}"
+            )
 
             if PSYCOPG_VERSION == 3:
                 # psycopg3 connection string
@@ -90,7 +98,8 @@ class DatabaseConnection:
                     f"keepalives={keepalives} "
                     f"keepalives_idle={keepalives_idle} "
                     f"keepalives_interval={keepalives_interval} "
-                    f"keepalives_count={keepalives_count}"
+                    f"keepalives_count={keepalives_count} "
+                    f"options='{conn_options}'"
                 )
                 self.connection_pool = ConnectionPool(
                     conninfo=conninfo,
@@ -116,6 +125,7 @@ class DatabaseConnection:
                     keepalives_idle=keepalives_idle,
                     keepalives_interval=keepalives_interval,
                     keepalives_count=keepalives_count,
+                    options=conn_options,
                 )
             print(f"Connection pool created successfully (psycopg{PSYCOPG_VERSION})")
             return True
@@ -123,27 +133,65 @@ class DatabaseConnection:
             print(f"Error creating connection pool: {e}")
             return False
 
+    def _pool_is_usable(self) -> bool:
+        """Return True when a connection pool exists and is not closed."""
+        pool = self.connection_pool
+        if pool is None:
+            return False
+        return not bool(getattr(pool, 'closed', False))
+
+    def _ensure_pool(self) -> None:
+        """Create or recreate the pool lazily when it is missing or closed."""
+        if self._pool_is_usable():
+            return
+
+        with self._pool_reset_lock:
+            if self._pool_is_usable():
+                return
+
+            self.connection_pool = None
+            if not self.create_pool():
+                raise RuntimeError('Database connection pool is unavailable')
+
     @contextmanager
     def get_cursor(self, commit=False):
         """Yield a cursor from the pool; commit or rollback based on execution outcome."""
         if PSYCOPG_VERSION == 3:
+            self._ensure_pool()
             # psycopg3 uses connection context manager
-            with self.connection_pool.connection() as connection:
-                with connection.cursor(row_factory=dict_row) as cursor:
-                    try:
-                        yield cursor
-                        if commit:
-                            connection.commit()
-                    except Exception as e:
-                        try:
-                            if not connection.closed:
-                                connection.rollback()
-                        except Exception as rollback_error:
-                            print(f"Rollback skipped due to lost connection: {rollback_error}")
-                        print(f"Error during database operation: {e}")
-                        raise
+            for attempt in range(2):
+                try:
+                    with self.connection_pool.connection() as connection:
+                        with connection.cursor(row_factory=dict_row) as cursor:
+                            try:
+                                yield cursor
+                                if commit:
+                                    connection.commit()
+                            except Exception as e:
+                                try:
+                                    if not connection.closed:
+                                        connection.rollback()
+                                except Exception as rollback_error:
+                                    print(f"Rollback skipped due to lost connection: {rollback_error}")
+                                print(f"Error during database operation: {e}")
+                                raise
+                    return
+                except PoolTimeout:
+                    if attempt == 0:
+                        time.sleep(float(os.getenv('DB_POOL_RETRY_DELAY', '0.15')))
+                        self._ensure_pool()
+                        continue
+                    print(f"Pool timeout while acquiring DB connection (max_conn={self.max_conn}).")
+                    raise
+                except Exception as exc:
+                    if attempt == 0 and ('closed' in str(exc).lower() or 'none' in str(exc).lower()):
+                        self.connection_pool = None
+                        self._ensure_pool()
+                        continue
+                    raise
         else:
             # psycopg2 manual connection management
+            self._ensure_pool()
             connection = self.connection_pool.getconn()
             cursor = connection.cursor(cursor_factory=RealDictCursor)
             should_close_connection = False

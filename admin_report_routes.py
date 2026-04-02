@@ -17,8 +17,11 @@ def get_all_reports():
         status = request.args.get('status')
         severity = request.args.get('severity')
         zone_id = request.args.get('zone_id')
-        limit = request.args.get('limit', type=int)
+        limit = request.args.get('limit', type=int, default=50)
         offset = request.args.get('offset', type=int, default=0)
+
+        limit = max(1, min(limit, 200))
+        offset = max(0, offset)
         
         # Build query
         query = """
@@ -48,11 +51,11 @@ def get_all_reports():
         
         query += " ORDER BY r.created_at DESC"
         
-        if limit:
-            query += f" LIMIT {limit} OFFSET {offset}"
+        query += " LIMIT %s OFFSET %s"
+        params.extend([limit, offset])
         
         with db_connection.get_cursor() as cursor:
-            cursor.execute(query, params if params else None)
+            cursor.execute(query, params)
             reports = cursor.fetchall()
         
         # Get total count
@@ -90,6 +93,11 @@ def get_all_reports():
 def get_pending_reports():
     """Get pending reports (admin only)"""
     try:
+        limit = request.args.get('limit', type=int, default=50)
+        offset = request.args.get('offset', type=int, default=0)
+        limit = max(1, min(limit, 200))
+        offset = max(0, offset)
+
         with db_connection.get_cursor() as cursor:
             cursor.execute("""
                 SELECT r.*, 
@@ -100,7 +108,8 @@ def get_pending_reports():
                 LEFT JOIN zones z ON r.zone_id = z.id
                 WHERE r.status = 'SUBMITTED'
                 ORDER BY r.created_at DESC
-            """)
+                LIMIT %s OFFSET %s
+            """, (limit, offset))
             reports = cursor.fetchall()
         
         return jsonify({
