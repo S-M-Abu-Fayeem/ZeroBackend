@@ -167,6 +167,8 @@ class DatabaseConnection:
                                 yield cursor
                                 if commit:
                                     connection.commit()
+                                else:
+                                    connection.rollback()
                             except Exception as e:
                                 try:
                                     if not connection.closed:
@@ -199,6 +201,8 @@ class DatabaseConnection:
                 yield cursor
                 if commit:
                     connection.commit()
+                else:
+                    connection.rollback()
             except Exception as e:
                 should_close_connection = True
                 try:
