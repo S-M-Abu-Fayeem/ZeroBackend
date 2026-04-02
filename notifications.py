@@ -1,8 +1,18 @@
+from datetime import timezone
+
 from flask import Blueprint, jsonify, request
 from auth import token_required, role_required
 from models import db_connection
 
 notifications_bp = Blueprint('notifications_api', __name__)
+
+
+def _to_utc_iso(dt):
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc).isoformat().replace('+00:00', 'Z')
 
 
 @notifications_bp.route('/notifications', methods=['GET'])
@@ -88,9 +98,10 @@ def get_notifications():
             """, [user_id])
             counts = cursor.fetchone()
         
-        # Convert timestamps to ISO format
+        # Convert timestamps to explicit UTC ISO strings so the client does not
+        # misread naive database timestamps as local time.
         for notification in notifications:
-            notification['created_at'] = notification['created_at'].isoformat()
+            notification['created_at'] = _to_utc_iso(notification['created_at'])
         
         return jsonify({
             'success': True,
@@ -227,7 +238,7 @@ def send_bulk_notification():
                 'audience': data['audience'],
                 'notification_type': notification_type,
                 'recipients_count': recipients_count,
-                'sent_at': bulk_notification['created_at'].isoformat()
+                    'sent_at': _to_utc_iso(bulk_notification['created_at'])
             }
         }), 200
     
