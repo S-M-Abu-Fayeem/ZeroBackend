@@ -2,7 +2,7 @@ try:
     # Try psycopg3 first (for Python 3.12+)
     import psycopg
     from psycopg.rows import dict_row
-    from psycopg_pool import ConnectionPool
+    from psycopg_pool import ConnectionPool, PoolTimeout
     PSYCOPG_VERSION = 3
 except ImportError:
     # Fall back to psycopg2 (for Python < 3.12)
@@ -15,6 +15,7 @@ from contextlib import contextmanager
 from typing import List, Dict, Any, Optional, Tuple
 import os
 import time
+from threading import Lock
 
 if PSYCOPG_VERSION == 3:
     DB_OPERATIONAL_ERRORS = (psycopg.OperationalError, psycopg.InterfaceError)
@@ -63,6 +64,7 @@ class DatabaseConnection:
         self.connection_pool = None
         self.min_conn = min_conn
         self.max_conn = max_conn
+        self._pool_reset_lock = Lock()
 
     def create_pool(self):
         """Create a connection pool with configured bounds; returns True on success."""
@@ -128,20 +130,28 @@ class DatabaseConnection:
         """Yield a cursor from the pool; commit or rollback based on execution outcome."""
         if PSYCOPG_VERSION == 3:
             # psycopg3 uses connection context manager
-            with self.connection_pool.connection() as connection:
-                with connection.cursor(row_factory=dict_row) as cursor:
-                    try:
-                        yield cursor
-                        if commit:
-                            connection.commit()
-                    except Exception as e:
-                        try:
-                            if not connection.closed:
-                                connection.rollback()
-                        except Exception as rollback_error:
-                            print(f"Rollback skipped due to lost connection: {rollback_error}")
-                        print(f"Error during database operation: {e}")
-                        raise
+            for attempt in range(2):
+                try:
+                    with self.connection_pool.connection() as connection:
+                        with connection.cursor(row_factory=dict_row) as cursor:
+                            try:
+                                yield cursor
+                                if commit:
+                                    connection.commit()
+                            except Exception as e:
+                                try:
+                                    if not connection.closed:
+                                        connection.rollback()
+                                except Exception as rollback_error:
+                                    print(f"Rollback skipped due to lost connection: {rollback_error}")
+                                print(f"Error during database operation: {e}")
+                                raise
+                    return
+                except PoolTimeout as timeout_error:
+                    # Recover once from a potentially stale/saturated pool, then re-raise.
+                    if attempt == 0 and self._reset_pool_after_timeout(timeout_error):
+                        continue
+                    raise
         else:
             # psycopg2 manual connection management
             connection = self.connection_pool.getconn()
@@ -169,6 +179,23 @@ class DatabaseConnection:
                     self.connection_pool.putconn(connection, close=should_close_connection or bool(connection.closed))
                 except Exception:
                     pass
+
+    def _reset_pool_after_timeout(self, timeout_error: Exception) -> bool:
+        """Reset pool once after acquisition timeout so future requests can recover."""
+        print(f"Pool acquisition timeout encountered: {timeout_error}")
+        with self._pool_reset_lock:
+            existing_pool = self.connection_pool
+            if existing_pool is None:
+                return self.create_pool()
+
+            try:
+                existing_pool.close()
+            except Exception as close_error:
+                print(f"Pool close during timeout recovery raised: {close_error}")
+
+            self.connection_pool = None
+            print("Attempting pool recreation after timeout...")
+            return self.create_pool()
     
     def close_pool(self):
         """Close all connections in the pool if it has been initialized."""

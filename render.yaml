@@ -39,7 +39,7 @@ services:
       - key: DB_MIN_CONN
         value: 2
       - key: DB_MAX_CONN
-        value: 8
+        value: 12
       - key: DB_SSLMODE
         value: require
       - key: DB_CONNECT_TIMEOUT
@@ -83,7 +83,7 @@ services:
       - key: GUNICORN_WORKERS
         value: 1
       - key: GUNICORN_THREADS
-        value: 8
+        value: 4
       - key: GUNICORN_TIMEOUT
         value: 120
       - key: SUPERADMIN_EMAIL
