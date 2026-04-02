@@ -254,35 +254,75 @@ def request_withdrawal():
 @token_required
 @role_required('CLEANER')
 def get_withdrawal_history():
-    """Get cleaner withdrawal history."""
+    """Get cleaner payment timeline (admin-paid earnings + withdrawals)."""
     try:
         user_id = request.current_user['id']
         limit = request.args.get('limit', type=int, default=30)
         offset = request.args.get('offset', type=int, default=0)
 
+        limit = max(1, min(limit, 200))
+        offset = max(0, offset)
+
         with db_connection.get_cursor() as cursor:
             _ensure_cleaner_withdrawals_table(cursor)
 
             cursor.execute("""
-                SELECT id, amount, method, destination_account, reference_code,
-                       note, status, requested_at, processed_at
-                FROM cleaner_withdrawals
-                WHERE cleaner_id = %s
-                ORDER BY requested_at DESC
+                SELECT *
+                FROM (
+                    SELECT
+                        CONCAT('WITHDRAW-', cw.id::text) AS id,
+                        'WITHDRAWAL'::text AS event_type,
+                        cw.amount AS amount,
+                        cw.status::text AS status,
+                        cw.method::text AS method,
+                        cw.destination_account::text AS destination_account,
+                        cw.reference_code::text AS reference_code,
+                        cw.note::text AS note,
+                        cw.requested_at AS event_at,
+                        cw.processed_at AS processed_at,
+                        NULL::uuid AS task_id,
+                        NULL::text AS task_description
+                    FROM cleaner_withdrawals cw
+                    WHERE cw.cleaner_id = %s
+
+                    UNION ALL
+
+                    SELECT
+                        CONCAT('EARN-', et.id::text) AS id,
+                        'ADMIN_PAYMENT'::text AS event_type,
+                        et.amount AS amount,
+                        et.status::text AS status,
+                        'ADMIN'::text AS method,
+                        NULL::text AS destination_account,
+                        NULL::text AS reference_code,
+                        CONCAT('Task payout: ', COALESCE(t.description, 'Task'))::text AS note,
+                        COALESCE(et.paid_at, et.created_at) AS event_at,
+                        et.paid_at AS processed_at,
+                        et.task_id AS task_id,
+                        t.description::text AS task_description
+                    FROM earnings_transactions et
+                    LEFT JOIN tasks t ON t.id = et.task_id
+                    WHERE et.cleaner_id = %s
+                      AND et.status = 'PAID'
+                ) timeline
+                ORDER BY event_at DESC
                 LIMIT %s OFFSET %s
-            """, (user_id, limit, offset))
+            """, (user_id, user_id, limit, offset))
             rows = cursor.fetchall()
 
             cursor.execute("""
-                SELECT COUNT(*) as total
-                FROM cleaner_withdrawals
-                WHERE cleaner_id = %s
-            """, (user_id,))
+                SELECT
+                    (
+                        (SELECT COUNT(*) FROM cleaner_withdrawals WHERE cleaner_id = %s)
+                        +
+                        (SELECT COUNT(*) FROM earnings_transactions WHERE cleaner_id = %s AND status = 'PAID')
+                    ) AS total
+            """, (user_id, user_id))
             total_result = cursor.fetchone()
 
         for row in rows:
             row['amount'] = _to_float(row.get('amount'))
-            row['requested_at'] = row['requested_at'].isoformat() if row.get('requested_at') else None
+            row['event_at'] = row['event_at'].isoformat() if row.get('event_at') else None
             row['processed_at'] = row['processed_at'].isoformat() if row.get('processed_at') else None
 
         return jsonify({
