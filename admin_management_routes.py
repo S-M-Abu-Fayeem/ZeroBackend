@@ -14,8 +14,11 @@ def get_all_users():
         # Get query parameters
         role = request.args.get('role')
         is_active = request.args.get('is_active')
-        limit = request.args.get('limit', type=int)
+        limit = request.args.get('limit', type=int, default=50)
         offset = request.args.get('offset', type=int, default=0)
+
+        limit = max(1, min(limit, 200))
+        offset = max(0, offset)
         
         # Build query
         query = "SELECT id, email, name, phone, role, is_active, created_at, last_login_at FROM users WHERE 1=1"
@@ -31,11 +34,11 @@ def get_all_users():
         
         query += " ORDER BY created_at DESC"
         
-        if limit:
-            query += f" LIMIT {limit} OFFSET {offset}"
+        query += " LIMIT %s OFFSET %s"
+        params.extend([limit, offset])
         
         with db_connection.get_cursor() as cursor:
-            cursor.execute(query, params if params else None)
+            cursor.execute(query, params)
             users = cursor.fetchall()
         
         # Get total count

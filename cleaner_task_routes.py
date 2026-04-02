@@ -17,6 +17,9 @@ def get_available_tasks():
         priority = request.args.get('priority')
         limit = request.args.get('limit', type=int, default=20)
         offset = request.args.get('offset', type=int, default=0)
+
+        limit = max(1, min(limit, 100))
+        offset = max(0, offset)
         
         # Build query
         where_clause = "WHERE t.status = 'APPROVED' AND t.cleaner_id IS NULL"

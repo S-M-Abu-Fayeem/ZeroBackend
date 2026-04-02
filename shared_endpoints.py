@@ -11,32 +11,40 @@ def get_all_zones():
     """Get all active zones with basic information"""
     try:
         with db_connection.get_cursor() as cursor:
-            # Get active zones
             cursor.execute("""
                 SELECT 
-                    z.id, z.name, z.description, z.cleanliness_score as cleanlinessScore, z.color
+                    z.id,
+                    z.name,
+                    z.description,
+                    z.cleanliness_score as cleanlinessScore,
+                    z.color,
+                    COALESCE(
+                        json_agg(
+                            json_build_object(
+                                'lat', zp.latitude,
+                                'lng', zp.longitude,
+                                'order', zp.point_order
+                            ) ORDER BY zp.point_order
+                        ) FILTER (WHERE zp.id IS NOT NULL),
+                        '[]'::json
+                    ) AS polygon
                 FROM zones z
+                LEFT JOIN zone_polygons zp ON zp.zone_id = z.id
                 WHERE z.is_active = true
+                GROUP BY z.id, z.name, z.description, z.cleanliness_score, z.color
                 ORDER BY z.name
             """)
             zones = cursor.fetchall()
-            
-            # Get polygon points for each zone
+
+            # Keep payload shape stable while normalizing coordinates to float.
             for zone in zones:
-                cursor.execute("""
-                    SELECT latitude, longitude, point_order
-                    FROM zone_polygons
-                    WHERE zone_id = %s
-                    ORDER BY point_order
-                """, (zone['id'],))
-                polygon_points = cursor.fetchall()
-                
+                polygon = zone.get('polygon') or []
                 zone['polygon'] = [
                     {
-                        'lat': float(point['latitude']),
-                        'lng': float(point['longitude'])
+                        'lat': float(point['lat']),
+                        'lng': float(point['lng'])
                     }
-                    for point in polygon_points
+                    for point in polygon
                 ]
         
         return jsonify({

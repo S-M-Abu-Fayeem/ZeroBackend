@@ -419,7 +419,10 @@ def login():
         }), 200
     
     except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
+        error_text = str(e)
+        if 'couldn\'t get a connection' in error_text.lower():
+            return jsonify({'success': False, 'error': 'Authentication service temporarily unavailable'}), 503
+        return jsonify({'success': False, 'error': error_text}), 500
 
 
 @app.route('/api/auth/me', methods=['GET'])

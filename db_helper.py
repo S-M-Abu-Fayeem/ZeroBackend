@@ -78,6 +78,12 @@ class DatabaseConnection:
             pool_timeout = int(os.getenv('DB_POOL_TIMEOUT', '10'))
             pool_max_lifetime = int(os.getenv('DB_POOL_MAX_LIFETIME', '300'))
             pool_max_idle = int(os.getenv('DB_POOL_MAX_IDLE', '60'))
+            statement_timeout_ms = int(os.getenv('DB_STATEMENT_TIMEOUT_MS', '12000'))
+            idle_tx_timeout_ms = int(os.getenv('DB_IDLE_TX_TIMEOUT_MS', '10000'))
+            conn_options = (
+                f"-c statement_timeout={statement_timeout_ms} "
+                f"-c idle_in_transaction_session_timeout={idle_tx_timeout_ms}"
+            )
 
             if PSYCOPG_VERSION == 3:
                 # psycopg3 connection string
@@ -92,7 +98,8 @@ class DatabaseConnection:
                     f"keepalives={keepalives} "
                     f"keepalives_idle={keepalives_idle} "
                     f"keepalives_interval={keepalives_interval} "
-                    f"keepalives_count={keepalives_count}"
+                    f"keepalives_count={keepalives_count} "
+                    f"options='{conn_options}'"
                 )
                 self.connection_pool = ConnectionPool(
                     conninfo=conninfo,
@@ -118,6 +125,7 @@ class DatabaseConnection:
                     keepalives_idle=keepalives_idle,
                     keepalives_interval=keepalives_interval,
                     keepalives_count=keepalives_count,
+                    options=conn_options,
                 )
             print(f"Connection pool created successfully (psycopg{PSYCOPG_VERSION})")
             return True
@@ -173,6 +181,7 @@ class DatabaseConnection:
                         time.sleep(float(os.getenv('DB_POOL_RETRY_DELAY', '0.15')))
                         self._ensure_pool()
                         continue
+                    print(f"Pool timeout while acquiring DB connection (max_conn={self.max_conn}).")
                     raise
                 except Exception as exc:
                     if attempt == 0 and ('closed' in str(exc).lower() or 'none' in str(exc).lower()):

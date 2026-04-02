@@ -37,9 +37,9 @@ services:
       - key: DB_KEEPALIVES_INTERVAL
         value: 10
       - key: DB_MAX_CONN
-        value: 8
+        value: 20
       - key: DB_MIN_CONN
-        value: 1
+        value: 2
       - key: DB_POOL_MAX_IDLE
         value: 60
       - key: DB_POOL_MAX_LIFETIME
@@ -53,7 +53,7 @@ services:
       - key: DB_SSLMODE
         value: require
       - key: GUNICORN_THREADS
-        value: 8
+        value: 4
       - key: GUNICORN_TIMEOUT
         value: 120
       - key: GUNICORN_WORKERS
