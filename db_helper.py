@@ -321,10 +321,10 @@ class Model:
         def _op():
             with self.db.get_cursor(commit=commit) as cursor:
                 cursor.execute(query, params or [])
-                try:
-                    return cursor.fetchall()
-                except Exception:
+                # Only fetch when the statement produced a result set (e.g., SELECT or RETURNING).
+                if cursor.description is None:
                     return []
+                return cursor.fetchall()
 
         # Retry only non-committing raw operations to avoid duplicate writes.
         if commit:
