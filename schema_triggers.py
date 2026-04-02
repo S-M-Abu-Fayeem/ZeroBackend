@@ -1,4 +1,4 @@
-﻿"""DDL trigger builders."""
+"""DDL trigger builders."""
 
 def _create_triggers(migration):
     """Define and create all application triggers."""
@@ -68,15 +68,15 @@ def _create_triggers(migration):
             INSERT INTO green_points_transactions (user_id, report_id, green_points, reason)
             VALUES (NEW.user_id, NEW.id, v_points, 'Report submitted');
             
+            -- Update streak (must be BEFORE updating last_report_date)
+            PERFORM update_citizen_streak(NEW.user_id);
+            
             -- Update citizen profile
             UPDATE citizen_profiles 
             SET total_reports = total_reports + 1,
                 green_points_balance = green_points_balance + v_points,
                 last_report_date = CURRENT_DATE
             WHERE user_id = NEW.user_id;
-            
-            -- Update streak
-            PERFORM update_citizen_streak(NEW.user_id);
             
             -- Create notification
             INSERT INTO notifications (user_id, type, title, message, related_report_id)
@@ -378,5 +378,6 @@ def _create_triggers(migration):
         AFTER UPDATE ON zones
         FOR EACH ROW EXECUTE FUNCTION handle_zone_cleanliness_alert();
     """, "Created trigger for zone cleanliness alerts")
+
 
 

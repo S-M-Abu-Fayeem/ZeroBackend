@@ -44,7 +44,6 @@ def _ensure_funding_tables(cursor):
         WHERE NOT EXISTS (SELECT 1 FROM system_funds)
     """)
 
-
 def _get_wallet_row(cursor, lock=False):
     lock_clause = "FOR UPDATE" if lock else ""
     cursor.execute(f"""

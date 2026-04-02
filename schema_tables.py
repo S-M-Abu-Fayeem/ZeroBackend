@@ -1,4 +1,4 @@
-﻿"""DDL table builders."""
+"""DDL table builders."""
 
 def _create_tables(migration):
     """Define and create all application tables."""
@@ -412,6 +412,7 @@ def _create_tables(migration):
         );
     """, "Created earnings_transactions table")
     
+
     # Leaderboards
     migration.execute("""
         CREATE TABLE IF NOT EXISTS citizen_leaderboard (
@@ -458,6 +459,19 @@ def _create_tables(migration):
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
     """, "Created activity_logs table")
+    
+    migration.execute("""
+        CREATE TABLE IF NOT EXISTS audit_log (
+            id VARCHAR(36) PRIMARY KEY DEFAULT gen_random_uuid()::text,
+            table_name VARCHAR(100) NOT NULL,
+            record_id VARCHAR(36) NOT NULL,
+            action VARCHAR(50) NOT NULL,
+            changed_by VARCHAR(36),
+            changed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            old_data JSONB,
+            new_data JSONB
+        );
+    """, "Created audit_log table")
     
     # Sessions
     migration.execute("""

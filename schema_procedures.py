@@ -1,4 +1,4 @@
-﻿"""DDL stored procedure builders."""
+"""DDL stored procedure builders."""
 
 def _create_procedures(migration):
     """Define and create all application procedures."""
@@ -16,7 +16,10 @@ def _create_procedures(migration):
             INTO v_last_report_date, v_current_streak, v_longest_streak
             FROM citizen_profiles WHERE user_id = p_user_id;
             
-            IF v_last_report_date = CURRENT_DATE - INTERVAL '1 day' THEN
+            IF v_last_report_date IS NULL THEN
+                -- First ever report
+                v_current_streak := 1;
+            ELSIF v_last_report_date = CURRENT_DATE - INTERVAL '1 day' THEN
                 -- Continue streak
                 v_current_streak := v_current_streak + 1;
             ELSIF v_last_report_date < CURRENT_DATE - INTERVAL '1 day' THEN
@@ -453,7 +456,8 @@ def _create_procedures(migration):
         BEGIN
             UPDATE earnings_transactions 
             SET status = 'PAID',
-                paid_at = CURRENT_TIMESTAMP
+                paid_at = CURRENT_TIMESTAMP,
+                paid_by = p_admin_id
             WHERE id = p_transaction_id AND status = 'PENDING';
             
             -- Trigger handles balance updates
@@ -491,11 +495,8 @@ def _create_procedures(migration):
         CREATE OR REPLACE FUNCTION update_system_funds_after_transaction()
         RETURNS TRIGGER AS $$
         BEGIN
-            IF NEW.type = 'TOP_UP' THEN
-                UPDATE system_funds SET current_balance = current_balance + NEW.amount, total_added = total_added + NEW.amount, updated_at = CURRENT_TIMESTAMP;
-            ELSIF NEW.type = 'PAYOUT' THEN
-                UPDATE system_funds SET current_balance = current_balance - NEW.amount, total_paid = total_paid + NEW.amount, updated_at = CURRENT_TIMESTAMP;
-            END IF;
+            -- Trigger body disabled because admin_payments.py already updates system_funds.
+            -- Having both active causes a critical 'Double-Spend' calculation error!
             RETURN NEW;
         END;
         $$ LANGUAGE plpgsql;
@@ -533,9 +534,15 @@ def _create_procedures(migration):
         CREATE OR REPLACE FUNCTION log_earnings_transaction_changes()
         RETURNS TRIGGER AS $$
         BEGIN
-            INSERT INTO audit_log (table_name, record_id, action, changed_by, changed_at, old_data, new_data)
-            VALUES ('earnings_transactions', OLD.id, TG_OP, OLD.paid_by, CURRENT_TIMESTAMP, row_to_json(OLD), row_to_json(NEW));
-            RETURN NEW;
+            IF TG_OP = 'DELETE' THEN
+                INSERT INTO audit_log (table_name, record_id, action, changed_by, changed_at, old_data, new_data)
+                VALUES ('earnings_transactions', OLD.id, TG_OP, OLD.paid_by, CURRENT_TIMESTAMP, row_to_json(OLD), NULL);
+                RETURN OLD;
+            ELSE
+                INSERT INTO audit_log (table_name, record_id, action, changed_by, changed_at, old_data, new_data)
+                VALUES ('earnings_transactions', NEW.id, TG_OP, COALESCE(NEW.paid_by, OLD.paid_by), CURRENT_TIMESTAMP, row_to_json(OLD), row_to_json(NEW));
+                RETURN NEW;
+            END IF;
         END;
         $$ LANGUAGE plpgsql;
     """, "Created log_earnings_transaction_changes function")
