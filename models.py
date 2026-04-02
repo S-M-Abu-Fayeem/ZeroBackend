@@ -11,21 +11,49 @@ from models_schema import _create_tables, _create_indexes, _create_triggers, _cr
 
 load_dotenv()
 
+
+def _int_env(name: str, default: int) -> int:
+    """Read integer env values safely with a fallback default."""
+    try:
+        return int(os.getenv(name, str(default)))
+    except Exception:
+        return default
+
+
+def _resolved_pool_size() -> tuple[int, int]:
+    """Resolve pool sizing with guardrails for threaded deployments."""
+    configured_min = max(1, _int_env('DB_MIN_CONN', 2))
+    configured_max = max(configured_min, _int_env('DB_MAX_CONN', 10))
+
+    worker_threads = max(1, _int_env('GUNICORN_THREADS', 4))
+    recommended_max = max(8, worker_threads * 2)
+    effective_max = max(configured_max, recommended_max)
+    effective_min = min(configured_min, effective_max)
+
+    if effective_max != configured_max:
+        print(
+            f"Pool max adjusted from {configured_max} to {effective_max} "
+            f"for thread capacity (GUNICORN_THREADS={worker_threads})."
+        )
+
+    return effective_min, effective_max
+
 db_password = os.getenv('DB_PASSWORD')
 if db_password is None:
     raise RuntimeError('Missing required DB_PASSWORD environment variable. Set it in ZeroBackend/.env')
 
 db_config = DatabaseConfig(
     host=os.getenv('DB_HOST', 'localhost'),
-    port=int(os.getenv('DB_PORT', '5432')),
+    port=_int_env('DB_PORT', 5432),
     database=os.getenv('DB_NAME', 'zero_waste_db'),
     user=os.getenv('DB_USER', 'postgres'),
     password=db_password
 )
+pool_min_conn, pool_max_conn = _resolved_pool_size()
 db_connection = DatabaseConnection(
     db_config,
-    min_conn=int(os.getenv('DB_MIN_CONN', '2')),
-    max_conn=int(os.getenv('DB_MAX_CONN', '10'))
+    min_conn=pool_min_conn,
+    max_conn=pool_max_conn
 )
 
 

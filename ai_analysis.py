@@ -127,45 +127,45 @@ def analyze_existing_report(report_id):
     try:
         user_id = request.current_user['id']
         user_role = request.current_user['role']
-        
-        with db_connection.get_cursor(commit=True) as cursor:
-            # Verify report exists and user has access
+
+        # Phase 1: read/validate report quickly (no long transaction).
+        with db_connection.get_cursor() as cursor:
             if user_role == 'ADMIN':
                 access_condition = "1=1"
                 access_params = []
             else:
                 access_condition = "(user_id = %s OR cleaner_id = %s)"
                 access_params = [user_id, user_id]
-            
+
             cursor.execute(f"""
-                SELECT id, image_url, severity FROM reports 
+                SELECT id, image_url, severity FROM reports
                 WHERE id = %s AND {access_condition}
             """, [report_id] + access_params)
             report = cursor.fetchone()
-            
+
             if not report:
                 return jsonify({'success': False, 'error': 'Report not found or access denied'}), 404
-            
+
             if not report['image_url']:
                 return jsonify({'success': False, 'error': 'Report has no image to analyze'}), 400
-            
-            # Check if analysis already exists
+
             cursor.execute("""
                 SELECT id FROM waste_analyses WHERE report_id = %s
             """, (report_id,))
             existing_analysis = cursor.fetchone()
-            
+
             if existing_analysis:
                 return jsonify({'success': False, 'error': 'Report already has AI analysis'}), 409
-            
-            # Use real AI analysis service
-            analysis_result = ai_service.analyze_waste_image(report['image_url'])
-            
-            # Save analysis to database
+
+        # Phase 2: AI network call outside DB cursor.
+        analysis_result = ai_service.analyze_waste_image(report['image_url'])
+
+        # Phase 3: persist in short write transaction.
+        with db_connection.get_cursor(commit=True) as cursor:
             cursor.execute("""
-                INSERT INTO waste_analyses 
+                INSERT INTO waste_analyses
                 (report_id, description, severity, estimated_volume, environmental_impact,
-                 health_hazard, hazard_details, recommended_action, estimated_cleanup_time, 
+                 health_hazard, hazard_details, recommended_action, estimated_cleanup_time,
                  confidence, created_by)
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 RETURNING id
@@ -177,19 +177,17 @@ def analyze_existing_report(report_id):
                 analysis_result['confidence'], user_id
             ))
             analysis = cursor.fetchone()
-            
-            # Save waste composition
+
             for waste in analysis_result['wasteComposition']:
                 cursor.execute("""
-                    INSERT INTO waste_compositions 
+                    INSERT INTO waste_compositions
                     (waste_analysis_id, waste_type, percentage, recyclable)
                     VALUES (%s, %s, %s, %s)
                 """, (
-                    analysis['id'], waste['type'], 
+                    analysis['id'], waste['type'],
                     waste['percentage'], waste['recyclable']
                 ))
-            
-            # Save special equipment
+
             for equipment in analysis_result['specialEquipmentNeeded']:
                 cursor.execute("""
                     INSERT INTO special_equipment (waste_analysis_id, equipment_name)

@@ -12,56 +12,12 @@ services:
     startCommand: sh start.sh
     autoDeploy: true
     envVars:
-      - key: PYTHON_VERSION
-        value: 3.12.6
-      - key: SECRET_KEY
-        generateValue: true
-      - key: DB_HOST
-        fromDatabase:
-          name: zero-postgres
-          property: host
-      - key: DB_PORT
-        fromDatabase:
-          name: zero-postgres
-          property: port
-      - key: DB_NAME
-        fromDatabase:
-          name: zero-postgres
-          property: database
-      - key: DB_USER
-        fromDatabase:
-          name: zero-postgres
-          property: user
-      - key: DB_PASSWORD
-        fromDatabase:
-          name: zero-postgres
-          property: password
-      - key: DB_MIN_CONN
-        value: 2
-      - key: DB_MAX_CONN
-        value: 8
-      - key: DB_SSLMODE
-        value: require
-      - key: DB_CONNECT_TIMEOUT
-        value: 10
-      - key: DB_KEEPALIVES
-        value: 1
-      - key: DB_KEEPALIVES_IDLE
-        value: 30
-      - key: DB_KEEPALIVES_INTERVAL
-        value: 10
-      - key: DB_KEEPALIVES_COUNT
-        value: 5
-      - key: DB_POOL_TIMEOUT
+      - key: AI_FREE_ONLY_MODE
+        value: true
+      - key: AI_HTTP_TIMEOUT
         value: 20
-      - key: DB_POOL_MAX_LIFETIME
-        value: 300
-      - key: DB_POOL_MAX_IDLE
-        value: 60
-      - key: DB_QUERY_RETRIES
-        value: 2
-      - key: DB_QUERY_RETRY_DELAY
-        value: 0.3
+      - key: ALLOW_GROQ_FALLBACK
+        value: false
       - key: AUTH_USER_CACHE_TTL
         value: 30
       - key: AUTO_SETUP_DATABASE_ON_START
@@ -70,33 +26,39 @@ services:
         value: 10
       - key: DB_BOOTSTRAP_RETRY_DELAY
         value: 3
-      - key: FRONTEND_ORIGINS
-        value: https://zero-670.vercel.app,http://localhost:3000,http://127.0.0.1:3000
-      - key: ALLOW_VERCEL_ORIGINS
-        value: true
-      - key: AI_HTTP_TIMEOUT
-        value: 20
-      - key: AI_FREE_ONLY_MODE
-        value: true
-      - key: ALLOW_GROQ_FALLBACK
-        value: true
-      - key: GUNICORN_WORKERS
+      - key: DB_CONNECT_TIMEOUT
+        value: 10
+      - key: DB_KEEPALIVES
         value: 1
+      - key: DB_KEEPALIVES_COUNT
+        value: 5
+      - key: DB_KEEPALIVES_IDLE
+        value: 30
+      - key: DB_KEEPALIVES_INTERVAL
+        value: 10
+      - key: DB_MAX_CONN
+        value: 20
+      - key: DB_MIN_CONN
+        value: 2
+      - key: DB_POOL_MAX_IDLE
+        value: 60
+      - key: DB_POOL_MAX_LIFETIME
+        value: 300
+      - key: DB_POOL_TIMEOUT
+        value: 20
+      - key: DB_QUERY_RETRIES
+        value: 2
+      - key: DB_QUERY_RETRY_DELAY
+        value: 0.3
+      - key: DB_SSLMODE
+        value: require
       - key: GUNICORN_THREADS
-        value: 8
+        value: 4
       - key: GUNICORN_TIMEOUT
         value: 120
-      - key: SUPERADMIN_EMAIL
-        value: superadmin@zero.local
-      - key: SUPERADMIN_NAME
-        value: Super Admin
-      - key: SUPERADMIN_RESET_PASSWORD
-        value: false
-      - key: SUPERADMIN_PASSWORD
-        sync: false
-      - key: HUGGINGFACE_API_KEY
-        sync: false
-      - key: HF_TOKEN
-        sync: false
-      - key: GROQ_API_KEY
-        sync: false
+      - key: GUNICORN_WORKERS
+        value: 1
+      - key: MAX_IMAGE_BYTES
+        value: 8388608
+      - key: USE_FREE_VISION
+        value: true

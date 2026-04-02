@@ -39,16 +39,21 @@ Render reads [render.yaml](../render.yaml) and creates:
 - Database: zero-postgres
 - Web service: zero-backend (rootDir: ZeroBackend)
 
-### 3. Set required secret environment variables
+### 3. Set secret environment variables
 
-In Render service settings for zero-backend, set:
+Keep credentials out of `render.yaml` and set them in Render's service environment or your local `.env` file:
 
-- SUPERADMIN_PASSWORD (required by startup logic)
+- DB_PASSWORD
+- SECRET_KEY
+- SUPERADMIN_PASSWORD
+- HF_TOKEN or HUGGINGFACE_API_KEY
+- GROQ_API_KEY
 
-Optional secrets depending on features:
+Optional app identity values can stay in `.env` or be overridden in Render if needed:
 
-- HF_TOKEN (for HuggingFace-powered AI)
-- GROQ_API_KEY (for Groq AI fallback)
+- SUPERADMIN_EMAIL
+- SUPERADMIN_NAME
+- SUPERADMIN_RESET_PASSWORD
 
 ### 4. Configure frontend origin for CORS
 
