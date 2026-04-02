@@ -462,4 +462,89 @@ def _create_procedures(migration):
         $$;
     """, "Created sp_process_payment procedure")
 
+    # Prevent Overpayment: Prevent duplicate payment records for the same task
+    migration.execute("""
+        CREATE OR REPLACE FUNCTION prevent_duplicate_earnings()
+        RETURNS TRIGGER AS $$
+        DECLARE
+            v_count INT;
+        BEGIN
+            SELECT COUNT(*) INTO v_count FROM earnings_transactions
+            WHERE task_id = NEW.task_id AND status IN ('PENDING', 'PAID');
+            IF v_count > 0 THEN
+                RAISE EXCEPTION 'Earnings transaction already exists for this task.';
+            END IF;
+            RETURN NEW;
+        END;
+        $$ LANGUAGE plpgsql;
+    """, "Created prevent_duplicate_earnings function")
+
+    migration.execute("""
+        DROP TRIGGER IF EXISTS trg_prevent_duplicate_earnings ON earnings_transactions;
+        CREATE TRIGGER trg_prevent_duplicate_earnings
+        BEFORE INSERT ON earnings_transactions
+        FOR EACH ROW EXECUTE FUNCTION prevent_duplicate_earnings();
+    """, "Created trigger to prevent duplicate earnings transactions")
+
+    # Maintain System Funds Consistency: Update system_funds after fund transaction
+    migration.execute("""
+        CREATE OR REPLACE FUNCTION update_system_funds_after_transaction()
+        RETURNS TRIGGER AS $$
+        BEGIN
+            IF NEW.type = 'TOP_UP' THEN
+                UPDATE system_funds SET current_balance = current_balance + NEW.amount, total_added = total_added + NEW.amount, updated_at = CURRENT_TIMESTAMP;
+            ELSIF NEW.type = 'PAYOUT' THEN
+                UPDATE system_funds SET current_balance = current_balance - NEW.amount, total_paid = total_paid + NEW.amount, updated_at = CURRENT_TIMESTAMP;
+            END IF;
+            RETURN NEW;
+        END;
+        $$ LANGUAGE plpgsql;
+    """, "Created update_system_funds_after_transaction function")
+
+    migration.execute("""
+        DROP TRIGGER IF EXISTS trg_update_system_funds_after_transaction ON system_fund_transactions;
+        CREATE TRIGGER trg_update_system_funds_after_transaction
+        AFTER INSERT ON system_fund_transactions
+        FOR EACH ROW EXECUTE FUNCTION update_system_funds_after_transaction();
+    """, "Created trigger to update system funds after transaction")
+
+    # Prevent Negative Wallet Balance
+    migration.execute("""
+        CREATE OR REPLACE FUNCTION prevent_negative_wallet_balance()
+        RETURNS TRIGGER AS $$
+        BEGIN
+            IF NEW.current_balance < 0 THEN
+                RAISE EXCEPTION 'System wallet balance cannot be negative.';
+            END IF;
+            RETURN NEW;
+        END;
+        $$ LANGUAGE plpgsql;
+    """, "Created prevent_negative_wallet_balance function")
+
+    migration.execute("""
+        DROP TRIGGER IF EXISTS trg_prevent_negative_wallet_balance ON system_funds;
+        CREATE TRIGGER trg_prevent_negative_wallet_balance
+        BEFORE UPDATE ON system_funds
+        FOR EACH ROW EXECUTE FUNCTION prevent_negative_wallet_balance();
+    """, "Created trigger to prevent negative wallet balance")
+
+    # Audit Log for Sensitive Changes (example for earnings_transactions)
+    migration.execute("""
+        CREATE OR REPLACE FUNCTION log_earnings_transaction_changes()
+        RETURNS TRIGGER AS $$
+        BEGIN
+            INSERT INTO audit_log (table_name, record_id, action, changed_by, changed_at, old_data, new_data)
+            VALUES ('earnings_transactions', OLD.id, TG_OP, OLD.paid_by, CURRENT_TIMESTAMP, row_to_json(OLD), row_to_json(NEW));
+            RETURN NEW;
+        END;
+        $$ LANGUAGE plpgsql;
+    """, "Created log_earnings_transaction_changes function")
+
+    migration.execute("""
+        DROP TRIGGER IF EXISTS trg_log_earnings_transaction_changes ON earnings_transactions;
+        CREATE TRIGGER trg_log_earnings_transaction_changes
+        AFTER UPDATE OR DELETE ON earnings_transactions
+        FOR EACH ROW EXECUTE FUNCTION log_earnings_transaction_changes();
+    """, "Created trigger to log changes on earnings_transactions")
+
 
