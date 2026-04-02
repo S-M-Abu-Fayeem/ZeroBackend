@@ -69,7 +69,7 @@ def token_required(f):
         users_model = Model(db_connection, 'users')
         
         token = None
-        
+
         # Get token from header
         if 'Authorization' in request.headers:
             auth_header = request.headers['Authorization']
@@ -100,6 +100,8 @@ def token_required(f):
             
             # Add user to request context
             request.current_user = current_user
+
+            return f(*args, **kwargs)
             
         except jwt.ExpiredSignatureError:
             return jsonify({'success': False, 'error': 'Token has expired'}), 401
@@ -109,8 +111,6 @@ def token_required(f):
             # Protect API routes from raw DB/connection failures during auth lookup.
             print(f"Token validation failed due to backend error: {e}")
             return jsonify({'success': False, 'error': 'Authentication service temporarily unavailable'}), 503
-        
-        return f(*args, **kwargs)
     
     return decorated
 

@@ -280,7 +280,7 @@ def get_withdrawal_history():
                         cw.note::text AS note,
                         cw.requested_at AS event_at,
                         cw.processed_at AS processed_at,
-                        NULL::uuid AS task_id,
+                        NULL::text AS task_id,
                         NULL::text AS task_description
                     FROM cleaner_withdrawals cw
                     WHERE cw.cleaner_id = %s
@@ -298,7 +298,7 @@ def get_withdrawal_history():
                         CONCAT('Task payout: ', COALESCE(t.description, 'Task'))::text AS note,
                         COALESCE(et.paid_at, et.created_at) AS event_at,
                         et.paid_at AS processed_at,
-                        et.task_id AS task_id,
+                        et.task_id::text AS task_id,
                         t.description::text AS task_description
                     FROM earnings_transactions et
                     LEFT JOIN tasks t ON t.id = et.task_id

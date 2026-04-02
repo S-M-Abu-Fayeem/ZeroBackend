@@ -19,7 +19,7 @@ services:
       - key: ALLOW_GROQ_FALLBACK
         value: false
       - key: AUTH_USER_CACHE_TTL
-        value: 30
+        value: 120
       - key: AUTO_SETUP_DATABASE_ON_START
         value: true
       - key: DB_BOOTSTRAP_RETRIES
@@ -37,15 +37,15 @@ services:
       - key: DB_KEEPALIVES_INTERVAL
         value: 10
       - key: DB_MAX_CONN
-        value: 20
+        value: 40
       - key: DB_MIN_CONN
-        value: 2
+        value: 4
       - key: DB_POOL_MAX_IDLE
         value: 60
       - key: DB_POOL_MAX_LIFETIME
         value: 300
       - key: DB_POOL_TIMEOUT
-        value: 20
+        value: 30
       - key: DB_QUERY_RETRIES
         value: 2
       - key: DB_QUERY_RETRY_DELAY
@@ -53,7 +53,7 @@ services:
       - key: DB_SSLMODE
         value: require
       - key: GUNICORN_THREADS
-        value: 4
+        value: 8
       - key: GUNICORN_TIMEOUT
         value: 120
       - key: GUNICORN_WORKERS

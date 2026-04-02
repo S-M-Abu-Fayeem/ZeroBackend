@@ -9,6 +9,7 @@ import bcrypt
 import jwt
 import json
 from urllib.parse import urlsplit
+from threading import Lock
 from auth import token_required, role_required, superadmin_required
 from superadmin_routes import ensure_default_superadmin
 
@@ -65,6 +66,35 @@ else:
     allowed_origins = ["http://localhost:3000", "http://127.0.0.1:3000"]
 
 allowed_origins_set = set(allowed_origins)
+
+_login_request_locks = {}
+_login_request_locks_lock = Lock()
+
+
+def _acquire_login_request_lock(email: str) -> bool:
+    """Allow only one in-flight login attempt per email in this worker."""
+    normalized_email = email.strip().lower()
+    with _login_request_locks_lock:
+        lock = _login_request_locks.get(normalized_email)
+        if lock is None:
+            lock = Lock()
+            _login_request_locks[normalized_email] = lock
+
+    return lock.acquire(blocking=False)
+
+
+def _release_login_request_lock(email: str) -> None:
+    normalized_email = email.strip().lower()
+    with _login_request_locks_lock:
+        lock = _login_request_locks.get(normalized_email)
+
+    if not lock:
+        return
+
+    try:
+        lock.release()
+    except RuntimeError:
+        return
 
 CORS(app, 
      resources={r"/api/*": {"origins": allowed_origins}},
@@ -374,49 +404,58 @@ def login():
         # Validate required fields
         if not data.get('email') or not data.get('password'):
             return jsonify({'success': False, 'error': 'Email and password are required'}), 400
+
+        if not _acquire_login_request_lock(data['email']):
+            return jsonify({
+                'success': False,
+                'error': 'A login attempt is already in progress for this account'
+            }), 429
+
+        try:
+            # Find user by email
+            users = users_model.execute_raw(
+                "SELECT * FROM users WHERE email = %s",
+                [data['email']]
+            )
         
-        # Find user by email
-        users = users_model.execute_raw(
-            "SELECT * FROM users WHERE email = %s",
-            [data['email']]
-        )
-        
-        if not users:
-            return jsonify({'success': False, 'error': 'Invalid email or password'}), 401
-        
-        user = users[0]
-        
-        # Check if user is active
-        if not user.get('is_active'):
-            return jsonify({'success': False, 'error': 'Account is deactivated'}), 401
-        
-        # Verify password
-        if not bcrypt.checkpw(data['password'].encode('utf-8'), user['password_hash'].encode('utf-8')):
-            return jsonify({'success': False, 'error': 'Invalid email or password'}), 401
-        
-        # Update last login
-        users_model.execute_raw(
-            "UPDATE users SET last_login_at = CURRENT_TIMESTAMP WHERE id = %s",
-            [user['id']],
-            commit=True
-        )
-        
-        # Generate JWT token
-        token = jwt.encode({
-            'user_id': user['id'],
-            'email': user['email'],
-            'role': user['role']
-        }, app.config['SECRET_KEY'], algorithm="HS256")
-        
-        # Remove password hash from response
-        user.pop('password_hash', None)
-        
-        return jsonify({
-            'success': True,
-            'message': 'Login successful',
-            'token': token,
-            'user': user
-        }), 200
+            if not users:
+                return jsonify({'success': False, 'error': 'Invalid email or password'}), 401
+            
+            user = users[0]
+            
+            # Check if user is active
+            if not user.get('is_active'):
+                return jsonify({'success': False, 'error': 'Account is deactivated'}), 401
+            
+            # Verify password
+            if not bcrypt.checkpw(data['password'].encode('utf-8'), user['password_hash'].encode('utf-8')):
+                return jsonify({'success': False, 'error': 'Invalid email or password'}), 401
+            
+            # Update last login
+            users_model.execute_raw(
+                "UPDATE users SET last_login_at = CURRENT_TIMESTAMP WHERE id = %s",
+                [user['id']],
+                commit=True
+            )
+            
+            # Generate JWT token
+            token = jwt.encode({
+                'user_id': user['id'],
+                'email': user['email'],
+                'role': user['role']
+            }, app.config['SECRET_KEY'], algorithm="HS256")
+            
+            # Remove password hash from response
+            user.pop('password_hash', None)
+            
+            return jsonify({
+                'success': True,
+                'message': 'Login successful',
+                'token': token,
+                'user': user
+            }), 200
+        finally:
+            _release_login_request_lock(data['email'])
     
     except Exception as e:
         error_text = str(e)
